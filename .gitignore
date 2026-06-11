@@ -1,0 +1,7 @@
+# Local Claude Code config / session data
+.claude/
+
+# OS cruft
+Thumbs.db
+desktop.ini
+.DS_Store
