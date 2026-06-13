@@ -72,6 +72,8 @@ def refresh_full():
     cmd(0x22, [0xF7]); cmd(0x20); wait_busy()
 
 # partial windowed to the bar/number gate lines (rest of panel untouched & clean)
+# 0xFC = on-chip "fast partial" waveform (~0.5s @ room temp; 0.3s spec is @25C).
+# Lean 0xCC reuse-waveform variant saves only ~8ms (waveform-bound), not worth the risk.
 GY0, GY1 = 0, 56
 def refresh_partial():
     cmd(0x11, [0x03]); cmd(0x44, [0x00, ROWBYTES - 1])

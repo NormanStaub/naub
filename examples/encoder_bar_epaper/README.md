@@ -81,8 +81,18 @@ Measured on this panel:
   contained by the gate window, and the speedup was modest (it's frame-*rate*
   limited, ~15 Hz). Avoiding the global disturbance would need scope-level
   VCOM/voltage tuning. Not worth it for a volume indicator.
-- Net: **~525 ms/clean update is the practical floor** here. The trade-off for
-  e-paper's zero-power hold + sunlight readability.
+- The `0xFC` "fast partial" *is* the panel's on-chip OTP fast waveform (per GxEPD2
+  `GxEPD2_290_T94`). The vendor's **0.3 s** partial spec is rated **@ 25 °C**; we
+  measure ~0.49 s at (cooler) room temp — e-paper waveforms stretch when cold.
+  That temperature delta is the whole gap, and it's not addressable in firmware.
+- Tried the **lean repeated-partial command** (`0xFC` once, then `0xCC` to skip the
+  per-update temp/LUT reload): measured **494 ms vs 502 ms — only ~8 ms.** The
+  refresh is *pure waveform time*; reload overhead is negligible. Not kept (8 ms
+  isn't worth the documented SSD1680 LUT-handling quirk risk).
+- Net: **~0.5 s clean partial @ room temp is the hard floor** here. The trade-off
+  for e-paper's zero-power hold + sunlight readability.
 
 If sub-100 ms / fluid motion is ever required, that's a different display tech
-(small OLED/LCD), not a tuning problem.
+(small OLED/LCD), not a tuning problem. The e-paper-native answer for a knob is
+**update-on-settle**: don't refresh per detent — let the detent clicks give live
+feedback, and do one clean partial ~0.2 s after the knob stops.
