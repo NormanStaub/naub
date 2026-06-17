@@ -13,7 +13,8 @@ Raspberry Pi Pico 2 (RP2350) with rotary encoders and an e-paper display.
 
 | Doc | Purpose |
 |-----|---------|
-| [`V1_BUILD.md`](V1_BUILD.md) | Start here — V1 hardware build outline |
+| [`WRITEUP.md`](WRITEUP.md) | **Developer handoff** — current state, decisions, gotchas, roadmap |
+| [`V1_BUILD.md`](V1_BUILD.md) | V1 hardware build outline |
 | [`BOM.md`](BOM.md) | Bill of materials |
 | [`WIRING.md`](WIRING.md) | Pin-by-pin wiring & pinout spec |
 
