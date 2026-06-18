@@ -21,24 +21,39 @@ except ImportError:
 def icon_for(exe_path, label="", size=SIZE):
     """Return (w, h, packed_bytes) for a channel, never None.
 
-    Tries the executable's icon; on any failure falls back to a text glyph built
-    from `label` (or '?'), so the panel always shows something recognisable.
+    Tries the executable's icon; falls back to a letter glyph from `label` if the
+    exe has no icon or the extraction comes back degenerate (near blank / solid),
+    so the panel always shows something recognisable.
     """
-    img = None
     if exe_path and _HAVE_WIN32:
         img = _extract_exe_icon(exe_path, size)
-    if img is None:
-        img = _text_icon(label, size)
-    return pack_1bpp(_to_1bpp(img, size))
+        if img is not None:
+            packed = pack_1bpp(_to_1bpp(img, size))
+            if not _degenerate(packed):
+                return packed
+    return pack_1bpp(_to_1bpp(_text_icon(label, size), size))
 
 
 def _to_1bpp(img, size):
-    img = img.convert("RGBA")
-    bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
-    img = Image.alpha_composite(bg, img).convert("L")
-    if img.size != (size, size):
-        img = img.resize((size, size), Image.LANCZOS)
-    return img.convert("1")  # default = Floyd-Steinberg dither
+    # The source already has a white background baked into RGB (the exe icon is
+    # drawn over a white fill; the glyph is drawn on a white canvas), so flatten
+    # via RGB. Do NOT alpha-composite: GDI often returns a zeroed alpha channel,
+    # which would wipe the image to all-white.
+    g = img.convert("RGB").convert("L")
+    if g.size != (size, size):
+        g = g.resize((size, size), Image.LANCZOS)
+    # Threshold, not dither: at 32x32 on e-paper a luminance threshold keeps logos
+    # crisp and recognisable; Floyd-Steinberg turns detailed icons into noise.
+    return g.point(lambda v: 0 if v < 128 else 255, mode="1")
+
+
+def _degenerate(packed):
+    """True if the bitmap is almost all white or all black (a failed extraction)."""
+    _w, _h, data = packed
+    ink = sum(bin(b).count("1") for b in data)
+    total = len(data) * 8
+    ratio = ink / total if total else 0
+    return ratio < 0.02 or ratio > 0.98
 
 
 def pack_1bpp(img1):

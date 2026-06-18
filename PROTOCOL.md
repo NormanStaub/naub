@@ -53,10 +53,13 @@ that would create a feedback loop. This one rule keeps the link clean.
 | Message | Meaning |
 |---|---|
 | `naub proto=1 channels=4 fw=<ver>` | **Banner / handshake.** Sent once on boot, and again in response to `hello`. `fw` is a free-form firmware version string. |
-| `vol <ch> <0..100>` | A knob moved. Emitted **live, per detent** (every value change), so host audio tracks the knob smoothly. `<ch>` 0–3, value 0–100 integer. |
-| `mute <ch> <0\|1>` | An encoder was **pressed** (press = mute toggle). Reports the *new* mute state for that channel. |
+| `vol <ch> <0..100>` | A knob moved (switch **up**). Emitted **live, per detent** (every value change), so host audio tracks the knob smoothly. `<ch>` 0–3, value 0–100 integer. |
+| `mute <ch> <0\|1>` | An encoder was **clicked** (pressed and released *without* turning). Reports the *new* mute state. Fires on **release**, so it can be told apart from a hold-and-turn. |
+| `cycle <ch> <dir>` | The knob was **turned while its switch was held** — a request to reassign this channel's audio source. `<dir>` is `+1` (next) or `-1` (previous), one per detent. The host owns the source list and replies with new `label`/`icon`/`level`/`mute`. |
 | `btn <n> <0\|1>` | Aux button `n` toggled to the given latch state. V1 firmware emits `btn 0 <s>` for Button 1. |
 | `pong` | Reply to `ping`. Liveness only. |
+
+**Encoder gestures (firmware):** turn = `vol`; **hold switch + turn** = `cycle` (volume does not move while held); **click** (press+release, no turn) = `mute`. The device disambiguates on release: if it rotated during the hold it was a cycle (no mute is sent); otherwise it's a mute toggle.
 
 A `hello` is answered with the **banner only** — no `vol`/`mute` snapshot. The
 device boots with all levels at 0 and is *not* the source of truth for volume at

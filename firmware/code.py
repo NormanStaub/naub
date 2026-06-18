@@ -88,11 +88,16 @@ def cmd(c, data=None):
     if data is not None:
         dc.value = True; cs.value = False; spi.write(bytes(data)); cs.value = True
 
+_input_ready = False
 def wait_busy(timeout=5):
+    # The panel refresh is a ~0.5s blocking wait. Keep reading the encoders and
+    # the CDC link *during* it so volume events stay near-realtime even though the
+    # display only catches up after the refresh finishes.
     t0 = time.monotonic()
     while busy.value:
         if time.monotonic() - t0 > timeout: print("  ! BUSY timeout"); return
-        time.sleep(0.002)
+        if _input_ready: _service()
+        time.sleep(0.001)
 
 def _ram_area():
     cmd(0x11, [0x03]); cmd(0x44, [0x00, ROWBYTES - 1])
@@ -305,11 +310,55 @@ btn  = inp(board.GP6)
 # Encoders are read as RELATIVE deltas, not absolute position, so a host `level`
 # push and a physical turn compose instead of fighting each other.
 last_pos = [e.position if e is not None else 0 for e in encs]
-press_prev = [False, False, False, False]
+press_prev = [False, False, False, False]    # switch held last loop
+press_turned = [False, False, False, False]  # rotated during the current hold?
 btn_on = False; btn_prev = False
 
 def _clampv(v):
     return 0 if v < 0 else (100 if v > 100 else v)
+
+SETTLE_S = 0.125
+def poll_inputs(now):
+    # Reads encoders/switches/button and emits events + updates state. Does NO
+    # drawing -- only sets dirty[] flags. Safe to call from inside wait_busy.
+    global btn_on, btn_prev
+    for c in range(NCH):
+        sw = sws[c]
+        held = (sw is not None) and (not sw.value)    # active-low: pressed = LOW
+        if sw is not None and held and not press_prev[c]:
+            press_turned[c] = False                   # new press: assume it's a click
+        e = encs[c]
+        if e is not None:
+            pos = e.position
+            dv = pos - last_pos[c]
+            if dv != 0:
+                last_pos[c] = pos
+                if held:                              # hold + turn = cycle source
+                    press_turned[c] = True
+                    s = 1 if dv > 0 else -1
+                    for _ in range(abs(dv)):
+                        send("cycle %d %d" % (c, s))   # one step per detent
+                else:                                 # turn = volume
+                    nv = _clampv(live[c] + dv * STEP)
+                    if nv != live[c]:
+                        live[c] = nv; ct[c] = now; pend[c] = True; dirty[c] = True
+                        send("vol %d %d" % (c, nv))   # live, per detent
+            if pend[c] and (now - ct[c]) > SETTLE_S and settled[c] != live[c]:
+                settled[c] = live[c]; pend[c] = False; dirty[c] = True
+        if sw is not None:
+            if (not held) and press_prev[c] and not press_turned[c]:
+                mute[c] = not mute[c]; dirty[c] = True  # click (no turn) = mute toggle
+                send("mute %d %d" % (c, 1 if mute[c] else 0))
+            press_prev[c] = held
+    pb = not btn.value
+    if pb and not btn_prev:
+        btn_on = not btn_on
+        send("btn 0 %d" % (1 if btn_on else 0))
+    btn_prev = pb
+
+def _service():
+    poll_cdc()
+    poll_inputs(time.monotonic())
 
 # ---------- boot ----------
 print("naub firmware", FW, "- init display...")
@@ -321,50 +370,24 @@ if DATA is None:
     print("WARN: usb_cdc.data is None -- did boot.py enable it? (power-cycle)")
 print("ready")
 
-SETTLE_S = 0.125
 FULL_AFTER = 60
 IDLE_FULL_S = 12.0
 pcount = 0
 last_act = time.monotonic()
+_input_ready = True          # wait_busy may now service inputs during refreshes
 
 while True:
     poll_cdc()
-    now = time.monotonic()
-    changed = False
-    for c in range(NCH):
-        e = encs[c]
-        if e is not None:
-            pos = e.position
-            dv = pos - last_pos[c]
-            if dv != 0:
-                last_pos[c] = pos
-                nv = _clampv(live[c] + dv * STEP)
-                if nv != live[c]:
-                    live[c] = nv; ct[c] = now; pend[c] = True; dirty[c] = True
-                    send("vol %d %d" % (c, nv))       # live, per detent
-            if pend[c] and (now - ct[c]) > SETTLE_S and settled[c] != live[c]:
-                settled[c] = live[c]; pend[c] = False; dirty[c] = True
-        sw = sws[c]
-        if sw is not None:
-            p = not sw.value
-            if p and not press_prev[c]:               # press edge = mute toggle
-                mute[c] = not mute[c]; dirty[c] = True
-                send("mute %d %d" % (c, 1 if mute[c] else 0))
-            press_prev[c] = p
-    pb = not btn.value
-    if pb and not btn_prev:
-        btn_on = not btn_on
-        send("btn 0 %d" % (1 if btn_on else 0))
-    btn_prev = pb
+    poll_inputs(time.monotonic())
 
     any_dirty = False
     for c in range(NCH):
         if dirty[c]:
             draw_channel(c); dirty[c] = False; any_dirty = True
     if any_dirty:
-        last_act = now
-        refresh_partial(); pcount += 1
-    elif pcount >= FULL_AFTER and (now - last_act) > IDLE_FULL_S:
+        last_act = time.monotonic()
+        refresh_partial(); pcount += 1     # wait_busy keeps inputs live during this
+    elif pcount >= FULL_AFTER and (time.monotonic() - last_act) > IDLE_FULL_S:
         refresh_full(); pcount = 0
         print("idle cleanup (full refresh)")
-    time.sleep(0.005)
+    time.sleep(0.002)
