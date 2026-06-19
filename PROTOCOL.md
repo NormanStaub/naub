@@ -106,8 +106,11 @@ Icons are **1 bit per pixel**, **black-ink = 1**.
   with `=` padding) and sent as the single final field of the `icon` message.
 
 The host is responsible for turning a full-color program icon into this:
-load → grayscale → resize to 32×32 → dither to 1-bpp (Floyd–Steinberg gives the
-most legible result on e-paper) → pack → Base64.
+load → grayscale → resize to 32×32 → **Floyd–Steinberg dither** to 1-bpp → pack →
+Base64. The panel is physically 1-bit, but dithering its dots makes icons read as
+grayscale; full-range Floyd–Steinberg gave the most legible result when compared
+live on the real 32×32 panel. So the wire stays plain 1-bpp yet icons show tonal
+depth without any grayscale-waveform/refresh cost.
 
 **Worked size:** 32×32, stride = 4 B, 32 rows = **128 bytes** → 172 Base64 chars.
 
@@ -167,9 +170,11 @@ may also be set in host config to skip probing.)
   changes flow D→H and stop. The host is the source of truth for *audio*; the
   device is the source of truth for *user intent*.
 - **Live `vol` vs. settle.** The device emits `vol` **per detent** so audio
-  tracks the knob immediately (cheap WASAPI call). The *display* still commits
-  on settle with the dithered preview (the project's e-paper UX decision) — that
-  is purely device-local rendering and independent of when `vol` is sent.
+  tracks the knob immediately (cheap WASAPI call). The *display*, by contrast,
+  does **not** scroll while turning: it commits a single clean bar a beat
+  (`SETTLE_S`) after the knob stops, with no numeric overlay. This is purely
+  device-local rendering and independent of when `vol` is sent — the audio is
+  realtime regardless of how lazily the e-paper repaints.
 
 ---
 

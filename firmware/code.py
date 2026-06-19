@@ -8,7 +8,8 @@
 #   H->D  hello | ping | label | icon | iconclear | level | mute
 #
 # Wiring (repo WIRING.md): ENC1 A/B/SW=GP0/GP1/GP2  ENC2 A/B/SW=GP3/GP4/GP5
-#   BTN1=GP6   display DC/CS/CLK/DIN/RST/BUSY=GP8/GP9/GP10/GP11/GP12/GP13
+#   ENC3 A/B/SW=GP14/GP15/GP16  ENC4 A/B/SW=GP17/GP18/GP19  (BTN1 GP6 unwired)
+#   display DC/CS/CLK/DIN/RST/BUSY=GP8/GP9/GP10/GP11/GP12/GP13
 # Libs needed in CIRCUITPY/lib: adafruit_display_text/, adafruit_ticks.mpy
 #
 # The SSD1680 driver (px/cmd/panel_init/refresh_*) is the validated code from
@@ -31,7 +32,9 @@ NCH = 4
 WIDTH, HEIGHT = 296, 128
 NX, NY = 128, 296
 ROWBYTES = NX // 8
-MNX, MNY = False, True
+# Both mirror flags set -> 180deg rotation (the panel is upside-down in the case).
+# Every primitive draws through px(), so flipping these flips the whole UI.
+MNX, MNY = True, False
 fb = bytearray(b"\xff" * (ROWBYTES * NY))
 
 def px(lx, ly, black=True):
@@ -132,7 +135,6 @@ LABEL_Y = 40
 BAR_Y0, BAR_Y1, BAR_HW = 54, 120, 14
 NBOX_Y0, NBOX_Y1 = 78, 98
 INNER_H = (BAR_Y1 - 2) - (BAR_Y0 + 2)
-DITHER_STEP = 2
 
 # ---------- per-channel state ----------
 labels = ["", "", "", ""]
@@ -167,20 +169,9 @@ def draw_label(c):
     s = labels[c][:11]
     if s: text(s, CX[c] - (len(s) * 6) // 2, LABEL_Y)
 
-def draw_num(c, v):
-    cx = CX[c]
-    rect(cx - 11, NBOX_Y0, cx + 11, NBOX_Y1, False)
-    s = str(v); ox = cx - (len(s) * 6) // 2
-    for ch in s:
-        b = DIGIT[ch]
-        for y in range(b.height):
-            for x in range(b.width):
-                if b[x, y]: px(ox + x, NBOX_Y0 + 4 + y, True)
-        ox += 6
-
 def _bar_box(c): return CX[c] - BAR_HW, CX[c] + BAR_HW
 
-def draw_bar(c, v):                      # committed: solid fill to value
+def draw_bar(c, v):                      # solid fill to value (no number overlay)
     x0, x1 = _bar_box(c)
     rect(x0, BAR_Y0, x1, BAR_Y0 + 2); rect(x0, BAR_Y1 - 2, x1, BAR_Y1)
     rect(x0, BAR_Y0, x0 + 2, BAR_Y1); rect(x1 - 2, BAR_Y0, x1, BAR_Y1)
@@ -188,29 +179,11 @@ def draw_bar(c, v):                      # committed: solid fill to value
     rect(ix0, iy0, ix1, iy1, False)
     f = fill_px(v)
     if f > 0: rect(ix0, iy1 - f, ix1, iy1, True)
-    draw_num(c, v)
-
-def _dither(x0, y0, x1, y1):
-    for y in range(y0, y1):
-        if y % DITHER_STEP: continue
-        for x in range(x0, x1):
-            if x % DITHER_STEP == 0: px(x, y, True)
-
-def draw_preview(c, s_lvl, l_lvl):       # solid to original, dither the change
-    x0, x1 = _bar_box(c)
-    rect(x0, BAR_Y0, x1, BAR_Y0 + 2); rect(x0, BAR_Y1 - 2, x1, BAR_Y1)
-    rect(x0, BAR_Y0, x0 + 2, BAR_Y1); rect(x1 - 2, BAR_Y0, x1, BAR_Y1)
-    ix0, ix1, iy1 = x0 + 2, x1 - 2, BAR_Y1 - 2
-    rect(ix0, BAR_Y0 + 2, ix1, iy1, False)
-    lo = fill_px(min(s_lvl, l_lvl)); hi = fill_px(max(s_lvl, l_lvl))
-    if lo > 0: rect(ix0, iy1 - lo, ix1, iy1, True)
-    if hi > lo: _dither(ix0, iy1 - hi, ix1, iy1 - lo)
-    draw_num(c, l_lvl)
 
 def draw_channel(c):
-    draw_icon(c); draw_label(c)
-    if pend[c]: draw_preview(c, settled[c], live[c])
-    else:       draw_bar(c, settled[c])
+    # Bar shows the *settled* value only: it commits when the knob stops, with no
+    # live scrolling preview and no numeric overlay. Audio still moved per detent.
+    draw_icon(c); draw_label(c); draw_bar(c, settled[c])
 
 # ---------- CDC protocol ----------
 _rxbuf = bytearray()
@@ -304,9 +277,10 @@ STEP = 2                                 # volume units per detent
 
 encs = [rotaryio.IncrementalEncoder(board.GP0, board.GP1),
         rotaryio.IncrementalEncoder(board.GP3, board.GP4),
-        None, None]                      # ch2/ch3 encoders not populated in V1
-sws  = [inp(board.GP2), inp(board.GP5), None, None]
-btn  = inp(board.GP6)
+        rotaryio.IncrementalEncoder(board.GP14, board.GP15),
+        rotaryio.IncrementalEncoder(board.GP17, board.GP18)]
+sws  = [inp(board.GP2), inp(board.GP5), inp(board.GP16), inp(board.GP19)]
+btn  = None                              # Button 1 (GP6) disconnected for now
 # Encoders are read as RELATIVE deltas, not absolute position, so a host `level`
 # push and a physical turn compose instead of fighting each other.
 last_pos = [e.position if e is not None else 0 for e in encs]
@@ -317,7 +291,9 @@ btn_on = False; btn_prev = False
 def _clampv(v):
     return 0 if v < 0 else (100 if v > 100 else v)
 
-SETTLE_S = 0.125
+SETTLE_S = 0.13    # commit the bar this long after the last detent; must exceed
+                   # the gap between detents in a slow scroll, or the bar repaints
+                   # mid-turn (audio still moves per detent regardless)
 def poll_inputs(now):
     # Reads encoders/switches/button and emits events + updates state. Does NO
     # drawing -- only sets dirty[] flags. Safe to call from inside wait_busy.
@@ -341,20 +317,25 @@ def poll_inputs(now):
                 else:                                 # turn = volume
                     nv = _clampv(live[c] + dv * STEP)
                     if nv != live[c]:
-                        live[c] = nv; ct[c] = now; pend[c] = True; dirty[c] = True
-                        send("vol %d %d" % (c, nv))   # live, per detent
-            if pend[c] and (now - ct[c]) > SETTLE_S and settled[c] != live[c]:
-                settled[c] = live[c]; pend[c] = False; dirty[c] = True
+                        live[c] = nv; ct[c] = now; pend[c] = True
+                        send("vol %d %d" % (c, nv))   # live audio, per detent
+            # Display commits only after the knob stops -- no dirty/refresh while
+            # turning, so the bar never scrolls. (Audio already moved, above.)
+            if pend[c] and (now - ct[c]) > SETTLE_S:
+                pend[c] = False
+                if settled[c] != live[c]:
+                    settled[c] = live[c]; dirty[c] = True
         if sw is not None:
             if (not held) and press_prev[c] and not press_turned[c]:
                 mute[c] = not mute[c]; dirty[c] = True  # click (no turn) = mute toggle
                 send("mute %d %d" % (c, 1 if mute[c] else 0))
             press_prev[c] = held
-    pb = not btn.value
-    if pb and not btn_prev:
-        btn_on = not btn_on
-        send("btn 0 %d" % (1 if btn_on else 0))
-    btn_prev = pb
+    if btn is not None:
+        pb = not btn.value
+        if pb and not btn_prev:
+            btn_on = not btn_on
+            send("btn 0 %d" % (1 if btn_on else 0))
+        btn_prev = pb
 
 def _service():
     poll_cdc()

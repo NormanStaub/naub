@@ -14,3 +14,6 @@ venv/
 
 # User's local host config (copied from config.example.json)
 host/config.json
+
+# host debug logs
+host/*.log

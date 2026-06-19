@@ -3,6 +3,11 @@
 Pipeline: executable HICON -> RGBA -> composite over white -> grayscale ->
 resize to SIZE -> Floyd-Steinberg dither to 1-bpp -> pack rows (MSB=leftmost,
 1=black ink). Falls back to a text glyph when an app has no extractable icon.
+
+The panel is physically 1-bit, but dithering its dots makes icons read as full
+grayscale. We use full-range Floyd-Steinberg: compared live on the real 32x32
+panel, its smooth tonal gradients looked better than an ordered/clamped-density
+palette, and it's all host-side, so the firmware/protocol stay plain 1-bpp.
 """
 from PIL import Image, ImageDraw, ImageFont
 
@@ -42,9 +47,7 @@ def _to_1bpp(img, size):
     g = img.convert("RGB").convert("L")
     if g.size != (size, size):
         g = g.resize((size, size), Image.LANCZOS)
-    # Threshold, not dither: at 32x32 on e-paper a luminance threshold keeps logos
-    # crisp and recognisable; Floyd-Steinberg turns detailed icons into noise.
-    return g.point(lambda v: 0 if v < 128 else 255, mode="1")
+    return g.convert("1")  # PIL default = full-range Floyd-Steinberg
 
 
 def _degenerate(packed):
