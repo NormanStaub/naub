@@ -1,5 +1,6 @@
 // naubd - native Windows daemon for the naub USB per-app mixer.
-// Console build first (parity with the Python host); tray + autostart layer on top.
+// Release builds are windowless (tray only); debug builds keep a console for dev.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![allow(dead_code)] // some debug helpers are wired in incrementally.
 
 mod app;
@@ -7,10 +8,12 @@ mod audio;
 mod config;
 mod icons;
 mod link;
+mod logging;
 mod protocol;
 mod state;
+mod tray;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -32,43 +35,79 @@ fn main() {
             Some(path) => icon_dump(path),
             None => println!("usage: naubd --icon <exe_path>"),
         },
+        Some("--install") => {
+            tray::set_autostart(true);
+            println!("naubd: start-with-Windows enabled");
+        }
+        Some("--uninstall") => {
+            tray::set_autostart(false);
+            println!("naubd: start-with-Windows disabled");
+        }
+        // Foreground (no tray) -- handy for debugging with live stdout.
+        Some("--console") => run_console(default_config_path()),
         Some("--config") => match args.get(1) {
-            Some(path) => run(PathBuf::from(path)),
+            Some(path) => run_console(PathBuf::from(path)),
             None => println!("usage: naubd --config <config.json>"),
         },
-        _ => run(default_config_path()),
+        // Default: the real app -- tray icon + background daemon thread.
+        _ => run_tray(default_config_path()),
     }
 }
 
-fn run(config_path: PathBuf) {
-    let cfg = match config::load(&config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("config load failed ({}): {e}", config_path.display());
-            std::process::exit(1);
-        }
-    };
-    println!("[naubd] config: {}", config_path.display());
-    let mut app = match app::App::new(cfg) {
-        Ok(a) => a,
+fn run_tray(config_path: PathBuf) {
+    let cfg = load_cfg_or_exit(&config_path);
+    init_logging(&cfg);
+    logging::line(&format!("starting (tray); config: {}", config_path.display()));
+    tray::run(cfg);
+}
+
+fn run_console(config_path: PathBuf) {
+    let cfg = load_cfg_or_exit(&config_path);
+    init_logging(&cfg);
+    logging::line(&format!("starting (console); config: {}", config_path.display()));
+    match app::App::new(cfg) {
+        Ok(mut app) => app.run_forever(),
         Err(e) => {
             eprintln!("audio init failed: {e}");
             std::process::exit(1);
         }
-    };
-    app.run_forever();
+    }
+}
+
+fn load_cfg_or_exit(path: &Path) -> config::Config {
+    match config::load(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("config load failed ({}): {e}", path.display());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn init_logging(cfg: &config::Config) {
+    let dir = cfg.path.parent().unwrap_or(Path::new("."));
+    logging::init(dir.join("naubd.log"));
 }
 
 fn default_config_path() -> PathBuf {
     let mut candidates = Vec::new();
+    // 1) next to the executable (portable install)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join("config.json"));
+        }
+    }
+    // 2) the canonical per-user location (works under autostart, cwd = system32)
+    if let Some(cfgdir) = dirs::config_dir() {
+        candidates.push(cfgdir.join("naub").join("config.json"));
+    }
+    // 3) current directory, then bundled example (first run)
+    candidates.push(PathBuf::from("config.json"));
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
             candidates.push(dir.join("config.example.json"));
         }
     }
-    candidates.push(PathBuf::from("config.json"));
-    candidates.push(PathBuf::from("config.example.json"));
     candidates
         .into_iter()
         .find(|p| p.exists())

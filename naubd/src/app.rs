@@ -45,7 +45,7 @@ pub struct App {
 }
 
 fn log(msg: &str) {
-    println!("[naubd] {msg}");
+    crate::logging::line(msg);
 }
 
 fn pretty(key: &str) -> String {
