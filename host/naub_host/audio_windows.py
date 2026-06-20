@@ -64,19 +64,64 @@ class SystemTarget:
 
 class WindowsAudio:
     def __init__(self):
-        self._sessions = []  # list of (name_lower, session)
+        self._sessions = []      # list of (name_lower, session)
+        self._seen_active = set()  # names that have rendered audio this session
 
     def snapshot(self):
         sessions = []
         for s in AudioUtilities.GetAllSessions():
             if s.Process is None:
                 continue
+            # Drop the Windows "system sounds" session (error dings, notification
+            # beeps). IsSystemSoundsSession() returns S_OK (0) when it *is* that
+            # session, S_FALSE (1) otherwise.
+            try:
+                if s._ctl.IsSystemSoundsSession() == 0:
+                    continue
+            except Exception:
+                pass
             try:
                 name = s.Process.name()
             except Exception:
                 continue
-            sessions.append((name.lower(), s))
+            name = name.lower()
+            # Remember anything caught rendering audio. The periodic snapshot
+            # (~2s) reliably samples sustained playback but almost never a
+            # sub-second UI ding, so this naturally admits media apps while
+            # leaving momentary blips out.
+            try:
+                if s.State == 1:  # 0=Inactive 1=Active 2=Expired
+                    self._seen_active.add(name)
+            except Exception:
+                pass
+            sessions.append((name, s))
         self._sessions = sessions
+
+    def mark_seen(self, name):
+        """Remember a process as a known audio app (e.g. a restored sticky
+        selection), so it's cyclable again right after a restart without having
+        to replay audio first."""
+        if name:
+            self._seen_active.add(name.lower())
+
+    def active_app_keys(self):
+        """Distinct process names selectable in the hold-to-cycle pool, in stable
+        first-seen order: anything currently rendering audio OR that has rendered
+        audio earlier this session (so paused/idle media stays pickable). Apps
+        that only ever held a silent session (File Explorer, CAD, etc.) and the
+        system-sounds session never qualify.
+        """
+        keys = []
+        for name, sess in self._sessions:
+            try:
+                cur_active = (sess.State == 1)
+            except Exception:
+                cur_active = False
+            if not (cur_active or name in self._seen_active):
+                continue
+            if name not in keys:
+                keys.append(name)
+        return keys
 
     def resolve(self, match):
         """Return a Target for this channel's match list, or None if absent."""

@@ -1,4 +1,6 @@
 """naub host orchestrator: bridge device events <-> Windows audio + display."""
+import json
+import os
 import time
 
 import serial
@@ -9,6 +11,7 @@ from .icons_windows import icon_for
 from .serial_link import SerialLink, autodetect
 
 LEVEL_PUSH_THRESHOLD = 2  # don't repaint the panel for sub-2% external drift
+STATE_FILE = "naub_state.json"  # sticky channel selections, stored beside config
 
 
 def _log(msg):
@@ -29,8 +32,13 @@ class ChannelState:
         self.is_system = SYSTEM_MATCH in [m.lower() for m in match]
         self.target = None
         self.key = None          # bound source key (proc name / __system__), or None
+        self.label = ""          # display label for the bound source (sticky)
+        self.exe_path = None     # cached exe path -> icon survives the app closing
         self.level = None        # last level (0-100) we believe is in sync
         self.mute = None
+        # What's currently drawn on the panel, as (key, active_bool) -- lets us
+        # skip redundant full repaints (and their ~0.5s e-paper refresh).
+        self.shown = None
 
 
 class App:
@@ -41,6 +49,15 @@ class App:
                    for ch, c in cfg.channels.items()}
         self.link = None
         self._last_input = 0.0  # last time a device input event arrived
+        cfg_dir = os.path.dirname(os.path.abspath(cfg.path)) if cfg.path else "."
+        self.state_path = os.path.join(cfg_dir, STATE_FILE)
+        self._last_state_str = None
+        self._load_state()
+        # Restored selections are known audio apps -> make them cyclable again
+        # immediately, without waiting for them to replay audio after a restart.
+        for st in self.ch.values():
+            if st.key and not st.is_system:
+                self.audio.mark_seen(st.key)
 
     # ---- connection ----------------------------------------------------------
 
@@ -72,9 +89,12 @@ class App:
                 time.sleep(3)
 
     def _reset_channels(self):
+        # Drop only the live session handle and what's-drawn marker. The binding
+        # (key/label/exe_path/level/mute) is deliberately kept so the same source
+        # selections survive a disconnect and get re-pushed on reconnect.
         for st in self.ch.values():
             st.target = None
-            st.key = st.level = st.mute = None
+            st.shown = None
 
     def _session_loop(self):
         last_reconcile = 0.0
@@ -159,14 +179,6 @@ class App:
 
     # ---- hold-and-turn: cycle a channel's source ----------------------------
 
-    def _active_app_keys(self):
-        """Distinct process names with a live audio session, in stable order."""
-        keys = []
-        for name, _sess in self.audio._sessions:
-            if name not in keys:
-                keys.append(name)
-        return keys
-
     def _cycle(self, ch, direction):
         st = self.ch.get(ch)
         if st is None or st.is_system:
@@ -179,7 +191,8 @@ class App:
         # Sources bound to OTHER (non-system) channels are off-limits (unique per knob).
         taken = {ost.key for oc, ost in self.ch.items()
                  if oc != ch and not ost.is_system and ost.key}
-        candidates = [k for k in self._active_app_keys() if k not in taken]
+        # Only apps *currently playing* are offered (see audio.active_app_keys).
+        candidates = [k for k in self.audio.active_app_keys() if k not in taken]
         if not candidates:
             _log("ch%d cycle: no free active sources" % ch)
             return
@@ -193,7 +206,8 @@ class App:
         target = self.audio.resolve([new_key])
         if target is not None:
             _log("ch%d cycle -> %s" % (ch, target.proc_name))
-            self._assign(ch, st, target)
+            self._adopt(ch, st, target)
+            self._save_state()
 
     # ---- us -> device (reconcile) -------------------------------------------
 
@@ -211,52 +225,78 @@ class App:
             _log("audio snapshot failed: %s" % e)
             return
         for ch, st in self.ch.items():
-            if st.key is not None:
-                # Bound (via config default or a manual cycle): keep it as long as
-                # that source is still alive; only fall back to config if it dies.
-                target = self.audio.resolve([st.key])
+            if st.key is None:
+                # No selection yet: seed from the configured default the first
+                # time a matching app is running. Once bound, the selection is
+                # sticky -- a later close does NOT revert to config.
+                target = self.audio.resolve(st.match)
                 if target is not None:
-                    st.target = target
-                    self._sync_external(ch, st, target)
-                    continue
-                _log("ch%d: '%s' gone" % (ch, st.key))
-                st.target = None
-                st.key = st.level = st.mute = None
-            # Unbound: try the configured default.
-            target = self.audio.resolve(st.match)
-            if target is not None:
-                self._assign(ch, st, target)
-            else:
-                self._clear(ch, st)
+                    self._adopt(ch, st, target)
+                else:
+                    self._show_blank(ch, st)
+                continue
+            self._present(ch, st)
+        self._save_state()
 
-    def _clear(self, ch, st):
-        if st.key is None and st.level is None:
-            return  # already clear; don't spam the panel
-        self.link.write_line(protocol.iconclear(ch))
-        self.link.write_line(protocol.label(ch, "--"))
-        self.link.write_line(protocol.level(ch, 0))
-        st.target = None
-        st.key = st.level = st.mute = None
-
-    def _assign(self, ch, st, target):
-        label = self._label_for(st, target)
-        st.target = target
+    def _adopt(self, ch, st, target):
+        """Bind a channel to a (currently live) source and remember it stickily."""
         st.key = target.key
-        _log("ch%d <- %s (%s)" % (ch, target.proc_name, label))
-        self.link.write_line(protocol.label(ch, label))
+        st.label = self._label_for(st, target)
+        if target.exe_path:
+            st.exe_path = target.exe_path
+        st.shown = None  # force a full repaint in _present
+        _log("ch%d <- %s (%s)" % (ch, target.proc_name, st.label))
+        self._present(ch, st)
+
+    def _present(self, ch, st):
+        """Push the channel's sticky binding to the panel.
+
+        Repaints the label+icon fully only when the shown identity or its
+        active/inactive state changes (avoids needless e-paper refreshes);
+        otherwise just syncs live level/mute. A bound app that isn't running
+        stays on screen (name + icon from the cached exe) so the user can
+        re-open it -- volume control simply no-ops until its session returns.
+        """
+        target = self.audio.resolve([st.key]) if st.key else None
+        st.target = target
+        active = target is not None
+        desired = (st.key, active)
+        if st.shown != desired:
+            if active:
+                try:
+                    st.level = int(round(target.get_volume() * 100))
+                    st.mute = target.get_mute()
+                except Exception:
+                    pass
+            label = st.label or _pretty(st.key)
+            self.link.write_line(protocol.label(ch, label))
+            self._push_icon(ch, st, target)
+            self.link.write_line(protocol.level(ch, st.level or 0))
+            self.link.write_line(protocol.mute(ch, bool(st.mute)))
+            st.shown = desired
+        elif active:
+            self._sync_external(ch, st, target)
+
+    def _push_icon(self, ch, st, target):
+        # Prefer the live exe path (and cache it); fall back to the remembered one
+        # so the icon still renders when the app is closed.
+        if target is not None and target.exe_path:
+            st.exe_path = target.exe_path
+        label = st.label or _pretty(st.key)
         try:
-            w, h, packed = icon_for(target.exe_path, label)
+            w, h, packed = icon_for(st.exe_path, label)
             self.link.write_line(protocol.icon(ch, w, h, packed))
         except Exception as e:
             _log("ch%d icon failed: %s" % (ch, e))
             self.link.write_line(protocol.iconclear(ch))
-        try:
-            st.level = int(round(target.get_volume() * 100))
-            st.mute = target.get_mute()
-            self.link.write_line(protocol.level(ch, st.level))
-            self.link.write_line(protocol.mute(ch, st.mute))
-        except Exception:
-            pass
+
+    def _show_blank(self, ch, st):
+        if st.shown == "blank":
+            return  # already blank; don't spam the panel
+        self.link.write_line(protocol.iconclear(ch))
+        self.link.write_line(protocol.label(ch, "--"))
+        self.link.write_line(protocol.level(ch, 0))
+        st.shown = "blank"
 
     def _sync_external(self, ch, st, target):
         """Push device updates only when the app/system changed under us."""
@@ -271,3 +311,49 @@ class App:
         if mu != st.mute:
             self.link.write_line(protocol.mute(ch, mu))
             st.mute = mu
+
+    # ---- sticky selection persistence ---------------------------------------
+
+    def _load_state(self):
+        try:
+            with open(self.state_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return
+        except Exception as e:
+            _log("state load failed: %s" % e)
+            return
+        for k, v in data.items():
+            try:
+                ch = int(k)
+            except (TypeError, ValueError):
+                continue
+            st = self.ch.get(ch)
+            if st is None or not isinstance(v, dict):
+                continue
+            st.key = v.get("key") or None
+            st.label = v.get("label", "")
+            st.exe_path = v.get("exe_path")
+            st.level = v.get("level")
+            st.mute = v.get("mute")
+        self._last_state_str = json.dumps(self._snapshot_state(), indent=2)
+
+    def _snapshot_state(self):
+        out = {}
+        for ch, st in self.ch.items():
+            if st.key:
+                out[str(ch)] = {"key": st.key, "label": st.label,
+                                "exe_path": st.exe_path,
+                                "level": st.level, "mute": st.mute}
+        return out
+
+    def _save_state(self):
+        s = json.dumps(self._snapshot_state(), indent=2)
+        if s == self._last_state_str:
+            return  # unchanged -> no disk write (cheap to call every reconcile)
+        try:
+            with open(self.state_path, "w", encoding="utf-8") as f:
+                f.write(s)
+            self._last_state_str = s
+        except Exception as e:
+            _log("state save failed: %s" % e)

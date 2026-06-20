@@ -15,5 +15,8 @@ venv/
 # User's local host config (copied from config.example.json)
 host/config.json
 
+# Sticky channel selections (per-machine runtime state)
+host/naub_state.json
+
 # host debug logs
 host/*.log

@@ -79,6 +79,27 @@ The host **never echoes** state the device reported: device-originated `vol`/
 `mute` flow one way (into audio), host-originated `level`/`icon`/`label` flow the
 other (onto the panel). That keeps the loop from oscillating — see PROTOCOL.md §8.
 
+## Source selection & persistence
+
+- **Cycling offers only real audio apps.** Hold a knob and turn to reassign its
+  source; the candidate list is every app that has actually produced audio this
+  session — so a paused or idle media app stays pickable, not just whatever is
+  rendering at that instant (the system endpoint is its own pinned knob). Apps
+  that merely hold a silent session — File Explorer, CAD tools — never appear,
+  nor does a momentary UI/error ding (the ~2s poll doesn't sample sub-second
+  blips), nor the Windows *system sounds* session. Note: sources are **unique per
+  knob**, so an app already assigned to one channel won't be offered on another.
+- **Selections are sticky.** Once a channel is bound to an app, it **stays** on
+  the panel (name + icon + bar) even after that app is paused, closed, or the
+  device disconnects — so you can re-open the app and the knob still drives it.
+  A channel only changes when you cycle it to something else. Volume control
+  simply no-ops while the bound app has no audio session.
+- **Survives reboot.** The current selections are saved to `naub_state.json`
+  (next to your `config.json`, git-ignored) and reloaded on startup. The
+  `config.json` `match` lists are now just the **initial seed** for a fresh
+  channel; after that, the live selection wins. Delete `naub_state.json` to reset
+  back to the config defaults.
+
 ## Troubleshooting
 
 - **"no naub device found"** — confirm `firmware/boot.py` is on the board and you

@@ -3,10 +3,11 @@ import json
 
 
 class Config:
-    def __init__(self, port="auto", refresh_seconds=2.0, channels=None):
+    def __init__(self, port="auto", refresh_seconds=2.0, channels=None, path=None):
         self.port = port
         self.refresh_seconds = refresh_seconds
         self.channels = channels or {}  # {int ch: {"label": str, "match": [str]}}
+        self.path = path                # source file, so sibling state can be found
 
 
 def load(path):
@@ -26,4 +27,5 @@ def load(path):
         port=raw.get("port", "auto"),
         refresh_seconds=float(raw.get("refresh_seconds", 2.0)),
         channels=channels,
+        path=path,
     )
