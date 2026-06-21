@@ -14,7 +14,7 @@
 #
 # The SSD1680 driver (px/cmd/panel_init/refresh_*) is the validated code from
 # examples/dithered_preview -- do not "improve" the refresh path, see WRITEUP.md.
-import board, busio, digitalio, rotaryio, terminalio, displayio, time, binascii
+import board, busio, digitalio, rotaryio, terminalio, displayio, time, binascii, math
 try:
     import usb_cdc
     DATA = usb_cdc.data
@@ -128,13 +128,26 @@ def refresh_partial():
     cmd(0x24, fb[GY0*ROWBYTES : (GY1+1)*ROWBYTES])
     cmd(0x22, [0xFC]); cmd(0x20); wait_busy()
 
-# ---------- channel layout (4 columns) ----------
-CX = [37, 111, 185, 259]                 # column centers, 74px pitch
-ICON_X, ICON_Y, ICON_SZ = 16, 6, 32      # half-width offset / top / box size
-LABEL_Y = 40
-BAR_Y0, BAR_Y1, BAR_HW = 54, 120, 14
-NBOX_Y0, NBOX_Y1 = 78, 98
-INNER_H = (BAR_Y1 - 2) - (BAR_Y0 + 2)
+# ---------- channel layout ----------
+# 3 app encoders sit below the screen (spread across its length); the master sits
+# off to the right of the screen -> mirror that here: the app arcs fan across the
+# width and the master pill is squashed against the right edge.
+CX = [46, 139, 232, 289]                 # app0..app2 spread, master far right
+SYS_CH = 3                               # rightmost knob = system/master pill
+                                         # (matches config: ch3 = __system__)
+
+# App channels: a C-shaped arc gauge (open at the bottom) wrapping the app icon,
+# with the app's name underneath. Just the filled stroke -- no track/border.
+ARC_CY = 52                              # gauge+icon centered high; label sits below
+ARC_RO, ARC_RI = 40, 30                  # outer/inner radius -> 10px stroke
+ARC_START = 135.0                        # vol=0 tip (bottom-left), degrees (y-down)
+ARC_SWEEP = 270.0                        # vol=100 sweeps round to the bottom-right tip
+ICON_SZ = 40                             # icon box (must match icons.rs SIZE)
+LABEL_Y = 94                             # app-name row, under the icon/gauge
+
+# System channel: a tall, narrow capsule squashed to the right edge. Fills from
+# the bottom and keeps its outline (border), unlike the borderless app arcs.
+PILL_CY, PILL_H, PILL_R = 64, 96, 6      # center / height / cap radius (-> 12px wide)
 
 # ---------- per-channel state ----------
 labels = ["", "", "", ""]
@@ -146,47 +159,75 @@ ct     = [0.0, 0.0, 0.0, 0.0]
 pend   = [False, False, False, False]
 dirty  = [False, False, False, False]
 
-def fill_px(v): return int(round(v / 100.0 * INNER_H))
+def _dither_ok(x, y):                    # 50% checkerboard -> reads as gray e-ink
+    return ((x + y) & 1) == 0
 
-def draw_icon(c):
-    x0 = CX[c] - ICON_X
-    rect(x0, ICON_Y, x0 + ICON_SZ, ICON_Y + ICON_SZ, False)
+def draw_arc(c, v, muted):
+    # Just the filled stroke -- volume = how far the arc sweeps from the bottom-
+    # left tip round to the bottom-right. No track/border behind the empty part.
+    cx = CX[c]; cy = ARC_CY
+    end = ARC_START + (v / 100.0) * ARC_SWEEP
+    ri2 = ARC_RI * ARC_RI; ro2 = ARC_RO * ARC_RO
+    for dy in range(-ARC_RO, ARC_RO + 1):
+        for dx in range(-ARC_RO, ARC_RO + 1):
+            d2 = dx * dx + dy * dy
+            if d2 < ri2 or d2 > ro2: continue
+            ang = math.degrees(math.atan2(dy, dx))
+            if ang < 0: ang += 360.0
+            if ang < ARC_START: ang += 360.0            # lift into [135, 495)
+            if ang > end: continue                      # past the fill (or in the gap)
+            if muted and not _dither_ok(cx + dx, cy + dy): continue
+            px(cx + dx, cy + dy, True)
+
+def draw_icon_center(c):
     ic = icons[c]
-    if ic:
-        w, h, data = ic
-        stride = (w + 7) // 8
-        ox = CX[c] - w // 2; oy = ICON_Y + (ICON_SZ - h) // 2
-        for yy in range(min(h, ICON_SZ)):
-            for xx in range(min(w, ICON_SZ)):
-                if (data[yy * stride + (xx >> 3)] >> (7 - (xx & 7))) & 1:
-                    px(ox + xx, oy + yy, True)
-    if mute[c]:                          # strike through the icon box
-        line(x0, ICON_Y, x0 + ICON_SZ - 1, ICON_Y + ICON_SZ - 1)
-        line(x0, ICON_Y + ICON_SZ - 1, x0 + ICON_SZ - 1, ICON_Y)
+    if not ic: return
+    w, h, data = ic
+    stride = (w + 7) // 8
+    if len(data) < stride * h: return            # guard: never index past short data
+    ox = CX[c] - w // 2; oy = ARC_CY - h // 2
+    for yy in range(min(h, ICON_SZ)):
+        for xx in range(min(w, ICON_SZ)):
+            if (data[yy * stride + (xx >> 3)] >> (7 - (xx & 7))) & 1:
+                px(ox + xx, oy + yy, True)        # icon always solid (no mute dither)
 
 def draw_label(c):
-    rect(CX[c] - 37, LABEL_Y, CX[c] + 37, LABEL_Y + 9, False)
     s = labels[c][:11]
-    if s: text(s, CX[c] - (len(s) * 6) // 2, LABEL_Y)
+    if not s: return
+    text(s, CX[c] - (len(s) * 6) // 2, LABEL_Y)  # centered terminalio text
 
-def _bar_box(c): return CX[c] - BAR_HW, CX[c] + BAR_HW
-
-def draw_bar(c, v):                      # solid fill to value (no number overlay)
-    x0, x1 = _bar_box(c)
-    rect(x0, BAR_Y0, x1, BAR_Y0 + 2); rect(x0, BAR_Y1 - 2, x1, BAR_Y1)
-    rect(x0, BAR_Y0, x0 + 2, BAR_Y1); rect(x1 - 2, BAR_Y0, x1, BAR_Y1)
-    ix0, ix1, iy0, iy1 = x0 + 2, x1 - 2, BAR_Y0 + 2, BAR_Y1 - 2
-    rect(ix0, iy0, ix1, iy1, False)
-    f = fill_px(v)
-    if f > 0: rect(ix0, iy1 - f, ix1, iy1, True)
+def draw_pill(c, v, muted):
+    cx = CX[c]
+    top = PILL_CY - PILL_H // 2; bot = PILL_CY + PILL_H // 2; r = PILL_R
+    fill_top = bot - int(round(v / 100.0 * PILL_H))
+    for y in range(top, bot + 1):
+        if   y < top + r: dy = (top + r) - y            # rounded caps
+        elif y > bot - r: dy = y - (bot - r)
+        else:             dy = 0                        # straight middle
+        if dy > r: continue
+        hw = int((r * r - dy * dy) ** 0.5)
+        for x in range(cx - hw, cx + hw + 1):
+            if abs(x - cx) >= hw - 1:                    # capsule outline (always solid)
+                px(x, y, True)
+            elif y >= fill_top:                         # fill from the bottom
+                if muted and not _dither_ok(x, y): continue
+                px(x, y, True)
 
 def draw_channel(c):
-    # Bar shows the *settled* value only: it commits when the knob stops, with no
-    # live scrolling preview and no numeric overlay. Audio still moved per detent.
-    draw_icon(c); draw_label(c); draw_bar(c, settled[c])
+    # Commits the *settled* value (after the knob stops); audio already moved per
+    # detent. App channels get the arc+icon, the system knob gets the pill.
+    if c == SYS_CH:
+        rect(WIDTH - 18, 0, WIDTH, HEIGHT, False)            # clear the right strip
+        draw_pill(c, settled[c], mute[c])
+    else:
+        rect(CX[c] - ARC_RO - 6, 0, CX[c] + ARC_RO + 6, HEIGHT, False)  # clear cell
+        draw_arc(c, settled[c], mute[c])
+        draw_icon_center(c)
+        draw_label(c)
 
 # ---------- CDC protocol ----------
 _rxbuf = bytearray()
+_last_rx = 0.0          # monotonic time of the last CDC byte (for burst-idle gate)
 
 DEBUG = False
 def send(s):
@@ -228,7 +269,8 @@ def handle_line(b):
         try:
             w = int(p[2]); h = int(p[3])
             data = binascii.a2b_base64(p[4])
-            icons[c] = (w, h, data); dirty[c] = True
+            if len(data) >= ((w + 7) // 8) * h:   # ignore a short/corrupt frame
+                icons[c] = (w, h, data); dirty[c] = True
         except Exception as e:
             print("icon parse err:", e)
         return
@@ -256,12 +298,12 @@ def _cv(t):
     return 0 if v < 0 else (100 if v > 100 else v)
 
 def poll_cdc():
-    global _rxbuf
+    global _rxbuf, _last_rx
     if DATA is None: return
     n = DATA.in_waiting
     if n:
         if DEBUG: print("DBG rx:", n)
-        _rxbuf.extend(DATA.read(n))
+        _rxbuf.extend(DATA.read(n)); _last_rx = time.monotonic()
     while True:
         i = _rxbuf.find(b"\n")
         if i < 0: break
@@ -358,13 +400,23 @@ last_act = time.monotonic()
 _input_ready = True          # wait_busy may now service inputs during refreshes
 
 while True:
+    # Drain the CDC RX buffer fully each pass. The reconnect burst pushes ~2 KB
+    # of icon data and the device buffer is small, so we must keep reading.
     poll_cdc()
+    while DATA is not None and DATA.in_waiting:
+        poll_cdc()
     poll_inputs(time.monotonic())
 
+    # Defer the (slow) redraws until the CDC burst goes quiet: a channel redraw
+    # blocks reads for tens of ms, long enough for an incoming icon line to
+    # overrun the buffer and arrive truncated. Reading the whole burst first,
+    # then drawing, keeps icons intact.
+    burst_idle = (time.monotonic() - _last_rx) > 0.03
     any_dirty = False
-    for c in range(NCH):
-        if dirty[c]:
-            draw_channel(c); dirty[c] = False; any_dirty = True
+    if burst_idle:
+        for c in range(NCH):
+            if dirty[c]:
+                draw_channel(c); dirty[c] = False; any_dirty = True
     if any_dirty:
         last_act = time.monotonic()
         refresh_partial(); pcount += 1     # wait_busy keeps inputs live during this

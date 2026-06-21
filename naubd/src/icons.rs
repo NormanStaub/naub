@@ -19,7 +19,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::Shell::ExtractIconExW;
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, DrawIconEx, DI_NORMAL, HICON};
 
-pub const SIZE: u32 = 32; // matches the firmware's per-channel icon box
+pub const SIZE: u32 = 40; // matches the firmware's per-channel icon box (ICON_SZ)
 
 /// Returns (w, h, packed_1bpp) for an executable's icon, or None if it has none
 /// or the result is degenerate (near-blank / solid).

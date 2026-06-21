@@ -2,7 +2,7 @@
 //! Ports naub_host/app.py: sticky selections, active-app cycle pool, repaint dedupe.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::audio::{Audio, SYSTEM_KEY};
@@ -48,6 +48,39 @@ fn log(msg: &str) {
     crate::logging::line(msg);
 }
 
+/// The canonical, launch-location-independent path for sticky selections:
+/// `%APPDATA%\naub\naub_state.json`. On first use there, adopt a legacy state
+/// file sitting beside the config so existing selections aren't lost on upgrade.
+fn stable_state_path(config_path: &Path) -> PathBuf {
+    let canonical = dirs::config_dir().map(|d| {
+        let dir = d.join("naub");
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join(STATE_FILE)
+    });
+    let canonical = match canonical {
+        Some(p) => p,
+        None => return PathBuf::from(STATE_FILE), // no APPDATA: fall back to cwd
+    };
+    if !canonical.exists() {
+        let legacy = config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(STATE_FILE);
+        if legacy.exists() && legacy != canonical {
+            if let Ok(data) = std::fs::read(&legacy) {
+                if std::fs::write(&canonical, data).is_ok() {
+                    log(&format!(
+                        "migrated sticky state {} -> {}",
+                        legacy.display(),
+                        canonical.display()
+                    ));
+                }
+            }
+        }
+    }
+    canonical
+}
+
 fn pretty(key: &str) -> String {
     let base = key.strip_suffix(".exe").unwrap_or(key);
     let mut c = base.chars();
@@ -77,11 +110,11 @@ impl App {
                 },
             );
         }
-        let state_path = cfg
-            .path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join(STATE_FILE);
+        // Sticky selections live in a FIXED per-user location, not beside the
+        // config -- so the device's memory survives no matter where the exe or
+        // config is launched from (double-click, cargo run, autostart, a moved
+        // install). Migrate a legacy beside-config file on first run.
+        let state_path = stable_state_path(&cfg.path);
 
         let mut app = App {
             cfg,
@@ -159,6 +192,13 @@ impl App {
         if let Some(l) = self.link.as_mut() {
             let _ = l.write_line(line);
         }
+        // Pace the link: the firmware stops reading its small USB-CDC RX buffer
+        // while it redraws a channel, so a back-to-back burst (esp. the ~400 B
+        // icon lines) overruns it and the base64 arrives truncated. A short gap
+        // lets the device drain between lines. Reconnect sends only ~16 lines, so
+        // the added latency is negligible.
+        let pause_ms = if line.starts_with("icon ") { 15 } else { 3 };
+        std::thread::sleep(std::time::Duration::from_millis(pause_ms));
     }
 
     fn send_all(&mut self, lines: Vec<String>) {
