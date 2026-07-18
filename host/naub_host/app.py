@@ -7,8 +7,12 @@ import serial
 
 from . import protocol
 from .audio_windows import SYSTEM_MATCH, WindowsAudio
+from .eq_windows import GlobalEq
 from .icons_windows import icon_for
 from .serial_link import SerialLink, autodetect
+
+# Display order of the 3 EQ bands -> band index sent over the wire (low/mid/high).
+EQ_BANDS = ("bass", "mid", "treble")
 
 LEVEL_PUSH_THRESHOLD = 2  # don't repaint the panel for sub-2% external drift
 STATE_FILE = "naub_state.json"  # sticky channel selections, stored beside config
@@ -45,6 +49,7 @@ class App:
     def __init__(self, cfg):
         self.cfg = cfg
         self.audio = WindowsAudio()
+        self.eq = GlobalEq()  # global tone control via Equalizer APO (no-ops if absent)
         self.ch = {ch: ChannelState(c["match"], c.get("label", ""))
                    for ch, c in cfg.channels.items()}
         self.link = None
@@ -70,6 +75,10 @@ class App:
                 raise ConnectionError("no naub device found (is it plugged in "
                                       "and running the CDC firmware?)")
         _log("opening %s" % port)
+        if self.eq.available:
+            _log("global EQ: Equalizer APO at %s" % self.eq.config_path)
+        else:
+            _log("global EQ: Equalizer APO not found -- EQ knob will no-op")
         self.link = SerialLink(port)
         self.link.write_line(protocol.hello())
 
@@ -118,6 +127,7 @@ class App:
             return
         if verb == "naub":
             _log("connected: %s" % line)
+            self._push_eq()  # seed the device's EQ graph with the persisted state
             return
         self._last_input = time.time()  # any device event = active use
         if verb == "vol" and len(args) >= 2:
@@ -128,6 +138,8 @@ class App:
             self._apply_button(int(args[0]), args[1] == "1")
         elif verb == "cycle" and len(args) >= 2:
             self._cycle(int(args[0]), 1 if int(args[1]) >= 0 else -1)
+        elif verb == "eq" and len(args) >= 2:
+            self._apply_eq(int(args[0]), int(args[1]))
         elif verb == "pong":
             pass
 
@@ -156,6 +168,30 @@ class App:
         except Exception as e:
             _log("btn %d apply failed: %s" % (n, e))
         _log("btn %d -> system mute=%d" % (n, state))
+
+    def _apply_eq(self, band, value):
+        # Device EQ knob turned (in EQ mode) -> drive the global tone control.
+        # Band 0/1/2 = low/mid/high. No-ops gracefully if no EQ engine is present.
+        if not self.eq.available:
+            _log("eq band %d %d (no EQ engine)" % (band, value))
+            return
+        try:
+            db = self.eq.set_band(band, value)
+            _log("eq band %d -> %d%% (%+.1f dB)" % (band, value, db))
+        except Exception as e:
+            _log("eq band %d apply failed: %s" % (band, e))
+
+    def _push_eq(self):
+        # Seed the device's EQ graph with the host-side persisted positions, so
+        # opening the EQ menu shows reality. Mirrors how level/mute are pushed.
+        if not (self.eq.available and self.link):
+            return
+        try:
+            vals = self.eq.values()
+        except Exception:
+            return
+        for band, key in enumerate(EQ_BANDS):
+            self.link.write_line(protocol.eqset(band, vals[key]))
 
     def _with_target(self, st, fn):
         """Run fn(target); re-resolve once if the cached session went stale."""

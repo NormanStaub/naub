@@ -40,7 +40,7 @@ copy config.example.json config.json
 }
 ```
 
-- Channels **0 and 1** are the wired encoders on V1.
+- Channels **0–2** are the app knobs on V1; channel **3** is the system/master knob.
 - `match` is one or more process names (case-insensitive). First running match wins.
 - `__system__` rides the default output device (master volume).
 - `label` is optional; omit it to use the app's process name.
@@ -52,8 +52,11 @@ copy config.example.json config.json
 python run.py
 ```
 
-Turn knob 1 or 2 and the mapped app's volume should move; the panel shows the
+Turn an app knob and the mapped app's volume should move; the panel shows the
 app icon, name, level bar, and number. Press a knob to mute (icon gets an X).
+Click the system knob to open the **global EQ** menu (bass/mid/treble on the app
+knobs); this requires [Equalizer APO](https://sourceforge.net/projects/equalizerapo/)
+installed and assigned to your output device.
 
 Helpers:
 
@@ -71,6 +74,7 @@ python run.py --port COM7      # force a port
 | `naub_host/app.py` | Orchestrator: event handling + periodic reconcile. |
 | `naub_host/serial_link.py` | CDC framing + **data-port autodetect** (probe `hello` → `naub` banner). |
 | `naub_host/audio_windows.py` | WASAPI per-app + system volume/mute (pycaw). |
+| `naub_host/eq_windows.py` | Global 3-band tone control via Equalizer APO (optional; no-ops if absent). |
 | `naub_host/icons_windows.py` | Exe icon → 32×32 1-bpp dithered → packed bytes. |
 | `naub_host/protocol.py` | proto=1 encode/decode. |
 | `naub_host/config.py` | Load/normalize the JSON config. |

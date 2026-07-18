@@ -34,9 +34,9 @@ host drives — including **program icons** rendered on the e-paper.
 
 ## 2. Channels
 
-- Channels are indexed **0–3** (four encoders). Hardware V1 has encoders 1 and 2
-  populated → channels **0** and **1** are live; 2 and 3 exist in the protocol and
-  on the display but never move until wired.
+- Channels are indexed **0–3** (four encoders). All four are wired and live on
+  V1: channels **0–2** are the app knobs and channel **3** is the system/master
+  knob (also the EQ-menu toggle — see §10).
 - A channel maps, host-side, to one or more application audio sessions (deej's
   `slider_mapping`). The reserved match token `__system__` means the default
   output device (system/master) — useful when you want a knob to ride the master
@@ -56,6 +56,7 @@ that would create a feedback loop. This one rule keeps the link clean.
 | `vol <ch> <0..100>` | A knob moved (switch **up**). Emitted **live, per detent** (every value change), so host audio tracks the knob smoothly. `<ch>` 0–3, value 0–100 integer. |
 | `mute <ch> <0\|1>` | An encoder was **clicked** (pressed and released *without* turning). Reports the *new* mute state. Fires on **release**, so it can be told apart from a hold-and-turn. |
 | `cycle <ch> <dir>` | The knob was **turned while its switch was held** — a request to reassign this channel's audio source. `<dir>` is `+1` (next) or `-1` (previous), one per detent. The host owns the source list and replies with new `label`/`icon`/`level`/`mute`. |
+| `eq <band> <0..100>` | *(proto=2)* An **EQ band knob moved** while the EQ menu is open. `<band>` is `0`=low `1`=mid `2`=high; value 0–100 (50 = flat). Emitted **live, per detent**, like `vol`. The host applies it to its global tone control (Windows: Equalizer APO). See §10. |
 | `btn <n> <0\|1>` | Aux button `n` toggled to the given latch state. V1 firmware emits `btn 0 <s>` for Button 1. |
 | `pong` | Reply to `ping`. Liveness only. |
 
@@ -84,6 +85,7 @@ program icon, the displayed level, and the displayed mute state.
 | `iconclear <ch>` | Remove the icon for `<ch>`. |
 | `level <ch> <0..100>` | Set the **displayed** level for `<ch>` *without* user input — e.g. initial sync, or when another app changed the volume out from under naub. The device updates its bar/number and does **not** echo a `vol`. |
 | `mute <ch> <0\|1>` | Set the **displayed** mute state for `<ch>` (symmetric with `level`). No echo. |
+| `eqset <band> <0..100>` | *(proto=2)* Set the **displayed** EQ band point (`0`=low `1`=mid `2`=high) without user input — e.g. seeding the EQ graph with the host's persisted tone settings on reconnect. Symmetric with `level`: the device moves the graph point and does **not** echo an `eq`. See §10. |
 
 `level` / `mute` are how the host keeps the panel honest: if the user changes
 Spotify's volume in the Windows mixer, the host pushes `level` so the knob
@@ -185,3 +187,35 @@ may also be set in host config to skip probing.)
   **not** in v1 — `hello` covers resync. Add it under `proto=2` if a heartbeat is
   ever wanted.
 - HID system-volume lives on its own interface and never appears here.
+
+---
+
+## 10. EQ overlay (proto=2)
+
+A **global tone control** — bass / mid / treble for the whole output, *not*
+per-app (Windows exposes no per-session EQ). The device gives it a screen and
+three knobs; the host applies it through an existing system-EQ engine (Windows:
+**Equalizer APO**, driven by writing a small hot-reloaded include file).
+
+**Gesture (firmware).** Clicking the **system knob** (the channel mapped to
+`__system__`, ch3 on V1) toggles the EQ menu open/closed. While open:
+
+- The three **app encoders** become the **low / mid / high** bands. Turning emits
+  `eq <band> <0..100>` live, per detent — the host applies it immediately.
+- **Clicking** an app encoder **flattens** that band (sends `eq <band> 50`).
+- The panel is replaced by a parametric-style graph: three control points (one
+  per band, above their knobs) joined by a smooth curve. The curve is
+  **illustrative** — it shows intent, not the literal filter response.
+
+**Direction split** mirrors `vol`/`level`: `eq` is **D→H** (user moved a band);
+`eqset` is **H→D** (host sets a displayed point, e.g. seeding the graph from
+persisted settings on reconnect). The device never echoes an `eqset` as an `eq`.
+
+**Host mapping.** Band value `0..100` maps linearly to **−12..+12 dB** (50 =
+flat). V1 host filters: low-shelf @120 Hz, peak @1 kHz (Q≈0.9), high-shelf
+@4 kHz. The engine is optional — if Equalizer APO isn't installed the host
+ignores `eq` (the menu still opens; nothing is applied).
+
+**Compatibility.** `eq`/`eqset` are additive; unknown verbs are ignored (§1), so
+a proto=1 host and a proto=2 device (or vice-versa) interoperate — the EQ feature
+is simply inert on whichever side lacks it.

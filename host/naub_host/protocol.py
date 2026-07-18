@@ -40,6 +40,13 @@ def mute(ch, muted):
     return "mute %d %d" % (ch, 1 if muted else 0)
 
 
+def eqset(band, value_0_100):
+    # H->D: set the *displayed* EQ point for <band> (0=low 1=mid 2=high) without
+    # user input -- e.g. pushing persisted EQ back to the graph on reconnect.
+    # Mirrors `level`: the device updates its graph and does NOT echo an `eq`.
+    return "eqset %d %d" % (band, _clamp(value_0_100))
+
+
 # ---- device -> host decoder --------------------------------------------------
 
 def parse(line):

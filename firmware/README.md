@@ -10,14 +10,16 @@ update-on-settle UX — the refresh path is unchanged on purpose (see
 
 ## What it does
 
-- Reads encoders 1 & 2 (rotate = volume 0–100, press = mute toggle) and Button 1.
+- Reads all four encoders (rotate = volume 0–100, press = mute toggle) and Button 1.
 - Emits `vol` / `mute` / `btn` events live over the CDC **data** port.
 - Accepts `label` / `icon` / `iconclear` / `level` / `mute` from the host and
   draws a 4-column panel: **icon · label · level bar · number**, with a strike
   over the icon when muted.
 - `hello` → banner + full state snapshot; `ping` → `pong`.
 
-Channels 0–1 are live (encoders populated); 2–3 are drawn but idle until wired.
+All four encoders are wired and live: 0–2 are the app knobs, 3 is the system
+knob. Clicking the system knob opens a **global EQ** overlay where the app knobs
+become low/mid/high (proto=2, see [`../PROTOCOL.md`](../PROTOCOL.md) §10).
 
 ## Flashing
 

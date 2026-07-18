@@ -26,7 +26,8 @@ except Exception:
 displayio.release_displays()
 from adafruit_display_text import bitmap_label
 
-FW = "v1.0"
+FW = "v1.1"
+PROTO = 2          # proto=2 adds the EQ overlay verbs (eq / eqset); see PROTOCOL.md
 NCH = 4
 
 WIDTH, HEIGHT = 296, 128
@@ -159,6 +160,14 @@ ct     = [0.0, 0.0, 0.0, 0.0]
 pend   = [False, False, False, False]
 dirty  = [False, False, False, False]
 
+# ---------- EQ overlay state (global tone control; PROTOCOL.md proto=2) ----------
+# Opened by clicking the system knob. While open, the 3 app encoders become the
+# low/mid/high bands and the panel is replaced by a parametric-style EQ graph.
+eq_mode    = False                       # is the EQ menu open?
+eq         = [50, 50, 50]                # low, mid, high positions (0..100, 50=flat)
+eq_dirty   = False                       # EQ screen needs a repaint
+force_full = False                       # next refresh = clean full (mode transition)
+
 def _dither_ok(x, y):                    # 50% checkerboard -> reads as gray e-ink
     return ((x + y) & 1) == 0
 
@@ -225,6 +234,52 @@ def draw_channel(c):
         draw_icon_center(c)
         draw_label(c)
 
+# ---------- EQ overlay rendering ----------
+# A full-screen parametric-style graph: three control points (low/mid/high) sit
+# above their app knobs, joined by a smooth (smoothstep) curve with flat tails.
+# Purely illustrative -- the curve shows intent, not the literal filter response
+# (the real bands are low-shelf / peak / high-shelf, applied host-side).
+EQ_X = [CX[0], CX[1], CX[2]]             # points align over the three app encoders
+EQ_X0, EQ_Y0, EQ_X1, EQ_Y1 = 6, 6, WIDTH - 6, 102   # plot rectangle (border)
+EQ_BASE = 54                             # y of a flat band (v=50)
+EQ_AMP = 40                              # v=100 -> EQ_BASE-EQ_AMP (up = boost)
+EQ_LABELS = ("LOW", "MID", "HIGH")
+
+def eq_y(v):
+    return EQ_BASE - int(round((v - 50) / 50.0 * EQ_AMP))
+
+def _smooth(xa, ya, xb, yb, x):
+    if xb == xa: return ya
+    t = (x - xa) / float(xb - xa)
+    s = t * t * (3 - 2 * t)              # smoothstep -> S-curve between points
+    return ya + (yb - ya) * s
+
+def eq_curve_y(x, ys):
+    if x <= EQ_X[0]: return ys[0]        # flat tail left of LOW
+    if x >= EQ_X[2]: return ys[2]        # flat tail right of HIGH
+    if x <= EQ_X[1]: return int(round(_smooth(EQ_X[0], ys[0], EQ_X[1], ys[1], x)))
+    return int(round(_smooth(EQ_X[1], ys[1], EQ_X[2], ys[2], x)))
+
+def draw_eq_screen():
+    rect(0, 0, WIDTH, HEIGHT, False)                 # wipe panel -> white
+    for x in range(EQ_X0, EQ_X1):                    # box: top/bottom edges
+        px(x, EQ_Y0, True); px(x, EQ_Y1, True)
+    for y in range(EQ_Y0, EQ_Y1 + 1):                # box: left/right edges
+        px(EQ_X0, y, True); px(EQ_X1, y, True)
+    ys = [eq_y(eq[0]), eq_y(eq[1]), eq_y(eq[2])]
+    for x in range(EQ_X0 + 1, EQ_X1):                # the curve (2px thick)
+        yy = eq_curve_y(x, ys)
+        px(x, yy, True); px(x, yy + 1, True)
+    for i in range(3):                               # hollow control-point rings
+        fill_circle(EQ_X[i], ys[i], 4, True)
+        fill_circle(EQ_X[i], ys[i], 2, False)
+    for bx in ((EQ_X[0] + EQ_X[1]) // 2, (EQ_X[1] + EQ_X[2]) // 2):  # band dividers
+        for y in range(EQ_Y1 - 6, EQ_Y1):
+            px(bx, y, True)
+    for i in range(3):                               # LOW / MID / HIGH labels
+        s = EQ_LABELS[i]
+        text(s, EQ_X[i] - (len(s) * 6) // 2, EQ_Y1 + 6)
+
 # ---------- CDC protocol ----------
 _rxbuf = bytearray()
 _last_rx = 0.0          # monotonic time of the last CDC byte (for burst-idle gate)
@@ -242,7 +297,7 @@ def send_banner():
     # Banner only. The host is authoritative for levels at startup (it reads each
     # app's real volume and pushes `level`), so we must NOT emit `vol` snapshots
     # here -- the host would apply them as user input and zero every app.
-    send("naub proto=1 channels=%d fw=%s" % (NCH, FW))
+    send("naub proto=%d channels=%d fw=%s" % (PROTO, NCH, FW))
 
 def handle_line(b):
     try: s = b.decode("utf-8").strip()
@@ -283,6 +338,15 @@ def handle_line(b):
         c = _ci(p[1])
         if c is not None: mute[c] = (p[2].strip() == "1"); dirty[c] = True
         return
+    if v == "eqset" and len(p) >= 3:
+        # H->D: set a displayed EQ band (0=low 1=mid 2=high) without user input.
+        # Mirrors `level` -- update state only, never echo an `eq` back.
+        global eq_dirty
+        b = _eqi(p[1])
+        if b is not None:
+            eq[b] = _cv(p[2])
+            if eq_mode: eq_dirty = True
+        return
     # unknown verb: ignore (forward compat)
 
 def _ci(t):
@@ -296,6 +360,13 @@ def _cv(t):
     try: v = int(t)
     except Exception: return 0
     return 0 if v < 0 else (100 if v > 100 else v)
+
+def _eqi(t):                             # EQ band index 0..2 (low/mid/high), or None
+    try:
+        b = int(t)
+        return b if 0 <= b < 3 else None
+    except Exception:
+        return None
 
 def poll_cdc():
     global _rxbuf, _last_rx
@@ -339,7 +410,7 @@ SETTLE_S = 0.13    # commit the bar this long after the last detent; must exceed
 def poll_inputs(now):
     # Reads encoders/switches/button and emits events + updates state. Does NO
     # drawing -- only sets dirty[] flags. Safe to call from inside wait_busy.
-    global btn_on, btn_prev
+    global btn_on, btn_prev, eq_mode, eq_dirty, force_full
     for c in range(NCH):
         sw = sws[c]
         held = (sw is not None) and (not sw.value)    # active-low: pressed = LOW
@@ -351,7 +422,14 @@ def poll_inputs(now):
             dv = pos - last_pos[c]
             if dv != 0:
                 last_pos[c] = pos
-                if held:                              # hold + turn = cycle source
+                if eq_mode:                           # EQ open: app knobs = low/mid/high
+                    press_turned[c] = True            # a turn is not a click
+                    if c != SYS_CH:
+                        nv = _clampv(eq[c] + dv * STEP)
+                        if nv != eq[c]:
+                            eq[c] = nv; eq_dirty = True
+                            send("eq %d %d" % (c, nv))  # live, per detent (host -> EQ)
+                elif held:                            # hold + turn = cycle source
                     press_turned[c] = True
                     s = 1 if dv > 0 else -1
                     for _ in range(abs(dv)):
@@ -363,14 +441,24 @@ def poll_inputs(now):
                         send("vol %d %d" % (c, nv))   # live audio, per detent
             # Display commits only after the knob stops -- no dirty/refresh while
             # turning, so the bar never scrolls. (Audio already moved, above.)
-            if pend[c] and (now - ct[c]) > SETTLE_S:
+            if (not eq_mode) and pend[c] and (now - ct[c]) > SETTLE_S:
                 pend[c] = False
                 if settled[c] != live[c]:
                     settled[c] = live[c]; dirty[c] = True
         if sw is not None:
-            if (not held) and press_prev[c] and not press_turned[c]:
-                mute[c] = not mute[c]; dirty[c] = True  # click (no turn) = mute toggle
-                send("mute %d %d" % (c, 1 if mute[c] else 0))
+            if (not held) and press_prev[c] and not press_turned[c]:   # click (no turn)
+                if c == SYS_CH:                       # system knob toggles the EQ menu
+                    eq_mode = not eq_mode
+                    eq_dirty = eq_mode                # entering -> draw the graph
+                    force_full = True                 # clean full refresh on transition
+                    if not eq_mode:
+                        for k in range(NCH): dirty[k] = True   # repaint panel on exit
+                elif eq_mode:                         # click an app knob = flatten its band
+                    if eq[c] != 50: eq[c] = 50; eq_dirty = True
+                    send("eq %d %d" % (c, 50))
+                else:                                 # normal: click = mute toggle
+                    mute[c] = not mute[c]; dirty[c] = True
+                    send("mute %d %d" % (c, 1 if mute[c] else 0))
             press_prev[c] = held
     if btn is not None:
         pb = not btn.value
@@ -414,12 +502,21 @@ while True:
     burst_idle = (time.monotonic() - _last_rx) > 0.03
     any_dirty = False
     if burst_idle:
-        for c in range(NCH):
-            if dirty[c]:
-                draw_channel(c); dirty[c] = False; any_dirty = True
+        if eq_mode:                        # EQ menu open -> draw the graph, not channels
+            if eq_dirty:
+                draw_eq_screen(); eq_dirty = False; any_dirty = True
+        else:
+            if force_full:                 # just exited EQ -> wipe leftover graph pixels
+                rect(0, 0, WIDTH, HEIGHT, False)
+            for c in range(NCH):
+                if dirty[c]:
+                    draw_channel(c); dirty[c] = False; any_dirty = True
     if any_dirty:
         last_act = time.monotonic()
-        refresh_partial(); pcount += 1     # wait_busy keeps inputs live during this
+        if force_full:                     # mode transition: one clean full refresh
+            force_full = False; refresh_full(); pcount = 0
+        else:
+            refresh_partial(); pcount += 1  # wait_busy keeps inputs live during this
     elif pcount >= FULL_AFTER and (time.monotonic() - last_act) > IDLE_FULL_S:
         refresh_full(); pcount = 0
         print("idle cleanup (full refresh)")
