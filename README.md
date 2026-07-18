@@ -14,9 +14,17 @@ Raspberry Pi Pico 2 (RP2350) with rotary encoders and an e-paper display.
 | Doc | Purpose |
 |-----|---------|
 | [`WRITEUP.md`](WRITEUP.md) | **Developer handoff** — current state, decisions, gotchas, roadmap |
+| [`PROTOCOL.md`](PROTOCOL.md) | **Host ⇄ device CDC protocol** (proto=1) — per-app volume + program icons |
 | [`V1_BUILD.md`](V1_BUILD.md) | V1 hardware build outline |
 | [`BOM.md`](BOM.md) | Bill of materials |
 | [`WIRING.md`](WIRING.md) | Pin-by-pin wiring & pinout spec |
+
+## Software
+
+| Dir | Purpose |
+|-----|---------|
+| [`firmware/`](firmware/) | CircuitPython firmware — CDC protocol + e-paper with icons |
+| [`host/`](host/) | Windows host helper (Python) — WASAPI per-app volume + icon push |
 
 ## Status
 

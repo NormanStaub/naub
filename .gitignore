@@ -5,3 +5,24 @@
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Python (host helper)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# User's local host config (copied from config.example.json)
+host/config.json
+
+# Sticky channel selections (per-machine runtime state)
+host/naub_state.json
+
+# host debug logs
+host/*.log
+
+# Rust daemon (naubd) build output + local config/state
+naubd/target/
+naubd/config.json
+naubd/naub_state.json
+naubd/*.log

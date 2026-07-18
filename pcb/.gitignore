@@ -1,0 +1,6 @@
+# SKiDL generated artifacts — regenerate with: python naub_v2.py
+naub_v2.net
+*_sklib.py
+*.erc
+*.log
+skidl_REPL.*

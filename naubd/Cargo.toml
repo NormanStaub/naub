@@ -1,0 +1,38 @@
+[package]
+name = "naubd"
+version = "0.1.0"
+edition = "2021"
+description = "naub host daemon: per-app USB mixer bridge for Windows (native)"
+
+[dependencies]
+serialport = "4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+dirs = "5"
+winreg = "0.52"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
+    "Win32_System_LibraryLoader",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+]
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

@@ -222,7 +222,9 @@ itself programs and caps.)
 ## 9. Open items
 
 - [ ] Source or drop the **aux button** part.
-- [ ] Specify the **CDC text protocol** for the host helper.
+- [x] Specify the **CDC text protocol** for the host helper. → **`PROTOCOL.md`**
+      (proto=1: deej-style per-app volume + bidirectional, with Base64 1-bpp
+      program icons pushed to the e-paper). Implemented by `firmware/` + `host/`.
 - [ ] Decide whether final firmware stays **CircuitPython** or moves to C/Pico-SDK
       (PIO decode + TinyUSB composite). Examples are CircuitPython today.
 - [ ] Confirm display firmware-class detail **only if** ever using GxEPD2/Arduino

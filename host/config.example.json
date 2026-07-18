@@ -1,0 +1,13 @@
+{
+  "port": "auto",
+  "refresh_seconds": 2.0,
+
+  "_comment": "Map each naub channel (0-3) to one or more process names (deej-style slider_mapping). The reserved match '__system__' rides the default output device (master volume). 'label' overrides the on-screen text; omit it to use the app's process name. Channels 0 and 1 are the wired encoders on V1.",
+
+  "channels": {
+    "0": { "label": "Spotify", "match": ["spotify.exe"] },
+    "1": { "label": "Browser", "match": ["chrome.exe", "msedge.exe", "firefox.exe"] },
+    "2": { "label": "Discord", "match": ["discord.exe"] },
+    "3": { "label": "System",  "match": ["__system__"] }
+  }
+}
