@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "naub")(type "KiCad")(uri "${KIPRJMOD}/naub.pretty")(options "")(descr "naub project footprints (PEC11L encoder, Kailh Choc V1)"))
+)

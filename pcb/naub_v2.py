@@ -15,26 +15,48 @@ RUN
     python naub_v2.py            # writes naub_v2.net (KiCad netlist format)
 
 THEN IN KICAD
-    Pcbnew → Tools → "Update PCB from Netlist" (point it at naub_v2.net), or
-    use the netlist importer. Assign/confirm footprints first (see below).
+    Create the KiCad project IN THIS DIRECTORY (pcb/) — the bundled
+    fp-lib-table then auto-registers the project footprint lib naub.pretty
+    under the nickname "naub". Open the PCB editor and use
+    File → Import → Netlist… (Load and Test first, then Update PCB).
+    Re-run this script + re-import after any electrical change.
 
-PIN NUMBERS — READ THIS
-    Standard parts (Pico, R, C, 2N7002) use REAL pad numbers → import-ready.
-    Custom modules (display, encoder, Choc, backlight, headers) use pin NAMES
-    as identifiers for readability. Before importing to the PCB, reconcile
-    those pad NUMBERS against whatever KiCad footprint you actually place
-    (e.g. the SnapEDA/Digi-Key DOGM128 symbol). The CONNECTIONS are the
-    durable output; pad-number mapping is a 5-minute reconcile per footprint.
+PIN NUMBERS / FOOTPRINTS — all real now, import-ready
+    Every footprint below resolves against KiCad's standard libs or
+    naub.pretty, and every pin number matches that footprint's pads:
+      MCU      : naub:Waveshare_RP2350-Tiny_Hybrid (2026-07-16, supersedes the
+                 Pico 2 — see PCB_DESIGN.md §0). Hybrid solder-down carrier
+                 footprint: 23-contact edge ring (castellation finger + 1.0mm
+                 alignment/solder hole each) + 13 solder-through holes for the
+                 back pads (GP16-23, 3V3, GND, SWD). Pads are NAMED (GP0...,
+                 3V3, GND, VSYS, SWCLK, SWDIO), not numbered. GP16 is spent on
+                 the module's onboard WS2812 (left unconnected here); GP24/25
+                 don't exist on the carrier (NC mode-select pads); GP27/28/29
+                 have 47R series resistors on-module (fine for GPIO/ADC).
+      DOGM128  : Display:EA_DOGM128-6 (stock KiCad; pads 21-40 = display,
+                 pads 1-3/18-20 = the LED55X46 backlight pins — the backlight
+                 module solders through the SAME footprint, no separate part)
+      Encoder  : naub:RotaryEncoder_Bourns_PEC11L-4xxxF-Sxxxx_Vertical
+                 (pads lettered A/C/B/S1/S2 to match these pins)
+      Choc     : naub:SW_Kailh_Choc_V1
+      Headers  : Connector_PinHeader_2.54mm:PinHeader_1x0N_P2.54mm_Vertical
+      R/C/FET  : Resistor_SMD / Capacitor_SMD / Package_TO_SOT_SMD (as before)
 
-FOOTPRINTS
-    Confirmed-standard : R_*, C_* (Resistor_SMD/Capacitor_SMD), SOT-23.
-    Placeholder (swap) : Pico, DOGM128, EC11E encoder, Choc, LED55X46-A,
-                         headers — marked "FIXME-FP" in the footprint field.
+RP2350-TINY DELTAS vs the old Pico 2 netlist (PCB_DESIGN.md §0)
+    - ENC3 switch: GP16 → GP23 (GP16 = onboard WS2812)
+    - Backlight rail: Pico VBUS pin → module VSYS edge contact (USB 5V arrives
+      over the adapter FPC; same ~5V, 3x 300R unchanged)
+    - SWD header J1 now taps the module's SWCLK/GND/SWDIO solder-through pads
+    - Expansion header J2 gains GP29 (extra ADC — was internal on the Pico)
 
-OPEN ITEM CARRIED IN HERE
-    The ST7565 charge-pump CAP3 far-end (VOUT vs VSS) is still unconfirmed
-    against the EA app schematic — see the ⚠ marker in the display section
-    and PCB_DESIGN.md §4.2.
+RESOLVED (was an open item)
+    ST7565 charge-pump CAP3 far-end = CAP1N (pin 30), per the EA DOGM128-6
+    datasheet p.4 "Single Supply 3.0/3.3V" application schematic
+    (2× 1µF chain: CAP3P–CAP1N and CAP1N–CAP1P; VOUT cap goes to GND).
+
+PEC11L HAND-SOLDER CAUTION
+    Bourns specs wave soldering only ("hand soldering not recommended").
+    Hobby hand assembly works in practice — fine tip, minimal dwell time.
 """
 
 from skidl import *
@@ -50,8 +72,6 @@ BIDIR = pin_types.BIDIR
 PWRIN = pin_types.PWRIN
 PWROUT = pin_types.PWROUT
 INPUT = pin_types.INPUT
-
-FIXME = "FIXME-FP:replace_with_real_footprint"
 
 
 # ----------------------------------------------------------------------------
@@ -80,10 +100,14 @@ def nmos_2n7002(ref=None):
                       Pin(num=3, name="D", func=PASSIVE)])
 
 
-def encoder_ec11(ref):
-    # Alps EC11E: A / C(common) / B + switch S1 / S2. Pin nums = names (reconcile to FP).
-    return Part(name="EC11E", ref_prefix="SW", value="EC11E1834403", ref=ref, tool=SKIDL,
-                footprint=FIXME + ":RotaryEncoder_Alps_EC11E-Switch",
+def encoder_pec11l(ref):
+    # Bourns PEC11L (11mm LOW PROFILE): A / C(common) / B + switch S1 / S2.
+    # PEC11L-4020F-S0020 = no detents, 20 PPR, 20mm flatted shaft, push switch —
+    # keeps BOM_V2's zero-detent smooth-feel intent (ex-Alps EC11E1834403).
+    # Other shaft lengths: -4015F-/-4025F-; detented feel: detent codes 1/2/3.
+    # Footprint pads are lettered to match these pin numbers — no reconcile needed.
+    return Part(name="PEC11L", ref_prefix="SW", value="PEC11L-4020F-S0020", ref=ref, tool=SKIDL,
+                footprint="naub:RotaryEncoder_Bourns_PEC11L-4xxxF-Sxxxx_Vertical",
                 pins=[Pin(num="A", name="A", func=PASSIVE),
                       Pin(num="C", name="C", func=PASSIVE),
                       Pin(num="B", name="B", func=PASSIVE),
@@ -93,78 +117,85 @@ def encoder_ec11(ref):
 
 def choc_switch(ref):
     return Part(name="Choc_V1", ref_prefix="SW", value="Kailh_Choc_Red", ref=ref, tool=SKIDL,
-                footprint=FIXME + ":SW_Kailh_Choc_V1",
+                footprint="naub:SW_Kailh_Choc_V1",
                 pins=[Pin(num=1, name="1", func=PASSIVE),
                       Pin(num=2, name="2", func=PASSIVE)])
 
 
 def pin_header(ref, names, value):
+    fp = f"Connector_PinHeader_2.54mm:PinHeader_1x{len(names):02d}_P2.54mm_Vertical"
     return Part(name="Conn", ref_prefix="J", value=value, ref=ref, tool=SKIDL,
-                footprint=FIXME + ":PinHeader_2.54mm",
+                footprint=fp,
                 pins=[Pin(num=i + 1, name=n, func=PASSIVE) for i, n in enumerate(names)])
 
 
-def pico2(ref="U1"):
-    """Raspberry Pi Pico 2 (RP2350), 40-pin + 3-pin SWD. Real pad numbers."""
-    pins = [
-        (1, "GP0"), (2, "GP1"), (3, "GND"), (4, "GP2"), (5, "GP3"),
-        (6, "GP4"), (7, "GP5"), (8, "GND"), (9, "GP6"), (10, "GP7"),
-        (11, "GP8"), (12, "GP9"), (13, "GND"), (14, "GP10"), (15, "GP11"),
-        (16, "GP12"), (17, "GP13"), (18, "GND"), (19, "GP14"), (20, "GP15"),
-        (21, "GP16"), (22, "GP17"), (23, "GND"), (24, "GP18"), (25, "GP19"),
-        (26, "GP20"), (27, "GP21"), (28, "GND"), (29, "GP22"), (30, "RUN"),
-        (31, "GP26"), (32, "GP27"), (33, "GND"), (34, "GP28"), (35, "ADC_VREF"),
-        (36, "3V3_OUT"), (37, "3V3_EN"), (38, "GND"), (39, "VSYS"), (40, "VBUS"),
-        # 3-pin debug header on the Pico
-        (41, "SWCLK"), (42, "GND"), (43, "SWDIO"),
-    ]
+def rp2350_tiny(ref="U1"):
+    """Waveshare RP2350-Tiny module on the naub hybrid carrier footprint.
+
+    Pad numbers ARE the signal names (the footprint names its pads GP0...,
+    3V3, GND, VSYS, SWCLK, SWDIO), so pin num == pin name throughout.
+    Multiple pads share the numbers 3V3 (edge + back) and GND (edge + back +
+    SWD row) — KiCad nets them together, same as the Pico's many GND pads.
+
+    Physical map (module top view, FPC/USB edge up):
+      edge left   : VSYS GND 3V3 GP29 GP28 GP27 GP26 GP15 GP14
+      edge right  : GP0..GP8   ·   edge bottom: GP13..GP9
+      back pads   : GND+GP16..19 col · 3V3+GP23..20 col · SWDIO/GND/SWCLK row
+    GP16 = onboard WS2812 (do not use for I/O); GP24/25 not brought out.
+    """
+    sigs = (["GP%d" % i for i in range(24)] +            # GP0..GP23 (no 24/25)
+            ["GP26", "GP27", "GP28", "GP29",
+             "3V3", "GND", "VSYS", "SWCLK", "SWDIO"])
     def fn(name):
-        if name in ("3V3_OUT", "VBUS"):
-            return PWROUT          # we source 3V3 / 5V FROM these
-        if name in ("GND",):
+        if name in ("3V3", "VSYS"):
+            return PWROUT          # 3V3 from the module LDO; VSYS = USB 5V in
+        if name == "GND":
             return PWRIN
-        if name in ("VSYS", "3V3_EN", "ADC_VREF", "RUN"):
-            return PASSIVE
         return BIDIR               # GPxx + SWD
-    return Part(name="RPi_Pico2", ref_prefix="U", ref=ref, value="Pico2_RP2350", tool=SKIDL,
-                footprint=FIXME + ":RPi_Pico_SMD_TH",
-                pins=[Pin(num=n, name=nm, func=fn(nm)) for n, nm in pins])
+    return Part(name="RP2350_Tiny", ref_prefix="U", ref=ref, value="Waveshare_RP2350-Tiny", tool=SKIDL,
+                footprint="naub:Waveshare_RP2350-Tiny_Hybrid",
+                pins=[Pin(num=s, name=s, func=fn(s)) for s in sigs])
 
 
 def dogm128(ref="U2"):
-    """EA DOGM128W-6 (ST7565R on glass). Pin nums = names (reconcile to FP)."""
-    names = ["SI", "SCL", "A0", "RST", "CS1B",          # SPI interface
-             "VDD", "VDD2", "VSS",                        # power / ground
-             "V0", "V1", "V2", "V3", "V4", "VOUT",        # LCD bias + booster out
-             "CAP1P", "CAP1N", "CAP2P", "CAP2N", "CAP3P"] # charge-pump flying caps
+    """EA DOGM128W-6 (ST7565R on glass). Real pad numbers per datasheet/KiCad FP.
+
+    Pads 21-40 are the display glass; pads 1-3 (A1-A3) and 18-20 (C1-C3) are
+    the EA LED55X46 backlight's pins — the backlight module clips under the
+    display and solders through the SAME footprint (3 independent LED paths).
+    """
+    pins = [
+        (36, "SI"), (37, "SCL"), (38, "A0"), (39, "RST"), (40, "CS1B"),  # SPI
+        (35, "VDD"), (34, "VDD2"), (26, "VSS"), (33, "VSS"),             # power
+        (21, "V0"), (22, "V1"), (23, "V2"), (24, "V3"), (25, "V4"),      # LCD bias
+        (32, "VOUT"),                                                    # booster out
+        (29, "CAP1P"), (30, "CAP1N"), (28, "CAP2P"), (27, "CAP2N"), (31, "CAP3P"),
+        (1, "A1"), (2, "A2"), (3, "A3"),      # backlight anodes (per LED path)
+        (18, "C1"), (19, "C2"), (20, "C3"),   # backlight cathodes
+    ]
     return Part(name="DOGM128W-6", ref_prefix="U", ref=ref, value="EA_DOGM128W-6", tool=SKIDL,
-                footprint=FIXME + ":EA_DOGM128",
-                pins=[Pin(num=nm, name=nm, func=PASSIVE) for nm in names])
-
-
-def backlight_led(ref="DS1"):
-    return Part(name="LED55X46-A", ref_prefix="DS", ref=ref, value="EA_LED55X46-A", tool=SKIDL,
-                footprint=FIXME + ":EA_LED55X46",
-                pins=[Pin(num="A", name="A", func=PASSIVE),
-                      Pin(num="K", name="K", func=PASSIVE)])
+                footprint="Display:EA_DOGM128-6",
+                pins=[Pin(num=n, name=nm, func=PASSIVE) for n, nm in pins])
 
 
 # ----------------------------------------------------------------------------
 # Power rails
 # ----------------------------------------------------------------------------
 gnd = Net("GND")
-p3v3 = Net("+3V3")          # Pico 3V3(OUT) → logic + display
-vbus = Net("VBUS_5V")       # tapped from Pico VBUS pin → backlight ONLY (not power-in)
+p3v3 = Net("+3V3")          # module 3V3 (ME6217 LDO, 800mA) → logic + display
+vsys = Net("VSYS_5V")       # USB 5V, arrives over the adapter FPC → backlight ONLY
 
 # ----------------------------------------------------------------------------
-# MCU
+# MCU — Waveshare RP2350-Tiny (PCB_DESIGN.md §0; supersedes the Pico 2)
 # ----------------------------------------------------------------------------
-pico = pico2()
-pico["3V3_OUT"] += p3v3
-pico["VBUS"] += vbus        # source 5V for backlight; power still ENTERS via the Pico USB jack
-pico["GND"] += gnd          # connects ALL pins named GND at once
+pico = rp2350_tiny()        # keeps the name `pico` — every net below reads the same
+pico["3V3"] += p3v3
+pico["VSYS"] += vsys        # 5V tap for the backlight; USB power/data stay on the FPC
+pico["GND"] += gnd          # connects ALL pads named GND at once (edge + back + SWD)
+# GP16 stays unconnected on purpose: it drives the module's onboard WS2812.
 
-# SWD breakout (flush Pico buries its pads — bring SWCLK/SWDIO/GND to a header)
+# SWD breakout (module back pads are buried once soldered down — bring
+# SWCLK/SWDIO/GND out to a header; route from the three solder-through holes)
 swd = pin_header("J1", ["SWCLK", "GND", "SWDIO"], "SWD")
 swd["SWCLK"] += pico["SWCLK"]
 swd["GND"] += gnd
@@ -177,11 +208,11 @@ swd["SWDIO"] += pico["SWDIO"]
 ENCODERS = [
     ("ENC1", "GP0", "GP1", "GP2"),
     ("ENC2", "GP3", "GP4", "GP5"),
-    ("ENC3", "GP14", "GP15", "GP16"),
+    ("ENC3", "GP14", "GP15", "GP23"),   # SW was GP16 on the Pico map; GP16 = Tiny's WS2812
     ("ENC4", "GP17", "GP18", "GP19"),
 ]
 for i, (name, a_gp, b_gp, sw_gp) in enumerate(ENCODERS, start=1):
-    enc = encoder_ec11(ref=f"SW{i}")
+    enc = encoder_pec11l(ref=f"SW{i}")
     na = Net(f"{name}_A"); nb = Net(f"{name}_B"); nsw = Net(f"{name}_SW")
     na += pico[a_gp], enc["A"]
     nb += pico[b_gp], enc["B"]
@@ -223,12 +254,11 @@ c_vdd = C("100nF", ref="C_LCD_VDD"); c_vdd[1] += p3v3; c_vdd[2] += gnd
 def cp(ref):
     return C("1uF", ref=ref, footprint="Capacitor_SMD:C_0805_2012Metric")
 
-# 3 flying caps (pump stages)
+# 3 flying caps (pump stages) — per EA datasheet p.4 "Single Supply 3.0/3.3V"
+# schematic: CAP1P–CAP1N, CAP2P–CAP2N, and CAP3P–CAP1N (CAP3 shares CAP1N).
 c1 = cp("C_CP1"); c1[1] += dog["CAP1P"]; c1[2] += dog["CAP1N"]
 c2 = cp("C_CP2"); c2[1] += dog["CAP2P"]; c2[2] += dog["CAP2N"]
-# ⚠ UNCONFIRMED far-end: CAP3 ties to VOUT or VSS depending on booster ratio.
-#    Verify against the EA DOGM128-6 "Application 3.3V" schematic before fab.
-c3 = cp("C_CP3"); c3[1] += dog["CAP3P"]; c3[2] += dog["VOUT"]   # ⚠ VOUT vs GND — verify
+c3 = cp("C_CP3"); c3[1] += dog["CAP3P"]; c3[2] += dog["CAP1N"]  # RESOLVED: CAP1N, not VOUT/VSS
 # 1 reservoir cap on the boosted output
 c_vout = cp("C_VOUT"); c_vout[1] += dog["VOUT"]; c_vout[2] += gnd
 # 5 LCD-bias divider caps V0..V4 → GND
@@ -236,16 +266,20 @@ for v in ("V0", "V1", "V2", "V3", "V4"):
     cv = cp(f"C_{v}"); cv[1] += dog[v]; cv[2] += gnd
 
 # ----------------------------------------------------------------------------
-# Backlight — EA LED55X46-A, on VBUS(5V), ~100Ω, low-side PWM via 2N7002 @ GP13
-#   For FIXED brightness instead: delete Q1/Rg/Rgs and tie DS1.K straight to GND.
+# Backlight — EA LED55X46-A (amber, Vf≈1.9V), through the DOGM128 footprint
+# (pads 1-3/18-20), on VSYS(5V, over the USB adapter FPC), low-side PWM via
+# 2N7002 @ GP13.
+#   3 independent LED paths → one series R per path (datasheet: "each path").
+#   3× 300Ω → ~10 mA/path, ~31 mA total (matches PCB_DESIGN §3 budget);
+#   ~32 mW per R → 0603 is fine (the old single 100Ω 1206 is gone).
+#   For FIXED brightness instead: delete Q1/Rg/Rgs and tie C1-C3 straight to GND.
 # ----------------------------------------------------------------------------
-bl = backlight_led()
-r_bl = R("100", ref="R_BL", footprint="Resistor_SMD:R_1206_3216Metric")  # ~0.1W → 1206
-n_bl_a = Net("BL_ANODE"); n_bl_k = Net("BL_CATHODE"); n_bl_g = Net("BL_PWM_GATE")
-r_bl[1] += vbus
-r_bl[2] += n_bl_a
-bl["A"] += n_bl_a
-bl["K"] += n_bl_k
+n_bl_k = Net("BL_CATHODE"); n_bl_g = Net("BL_PWM_GATE")
+for i in (1, 2, 3):
+    r = R("300", ref=f"R_BL{i}")
+    r[1] += vsys
+    r[2] += dog[f"A{i}"]
+    dog[f"C{i}"] += n_bl_k
 q_bl = nmos_2n7002(ref="Q1")
 q_bl["D"] += n_bl_k
 q_bl["S"] += gnd
@@ -254,22 +288,25 @@ r_g = R("100", ref="R_BL_G"); r_g[1] += pico["GP13"]; r_g[2] += n_bl_g     # gat
 r_gs = R("10k", ref="R_BL_GS"); r_gs[1] += n_bl_g; r_gs[2] += gnd          # gate pulldown
 
 # ----------------------------------------------------------------------------
-# Rail decoupling (near Pico 3V3OUT)
+# Rail decoupling (near the module's 3V3 contacts)
 # ----------------------------------------------------------------------------
 c_bulk = C("10uF", ref="C_BULK", footprint="Capacitor_SMD:C_0805_2012Metric")
 c_bulk[1] += p3v3; c_bulk[2] += gnd
 c_dec = C("100nF", ref="C_DEC"); c_dec[1] += p3v3; c_dec[2] += gnd
 
 # ----------------------------------------------------------------------------
-# Optional expansion header (PCB_NOTES open item): spare GP22 + ADC GP26-28
-#   GP26-28 reserved for a future fader/pot. Comment out if you don't want it.
+# Optional expansion header (PCB_NOTES open item): spare GP22 + ADC GP26-29
+#   GP26-28 reserved for a future fader/pot; GP29 = bonus ADC the Pico kept
+#   internal (47R series on-module on GP27/28/29 — harmless for GPIO/ADC).
+#   Comment out if you don't want it.
 # ----------------------------------------------------------------------------
-spare = pin_header("J2", ["+3V3", "GP22", "GP26", "GP27", "GP28", "GND"], "EXPANSION")
+spare = pin_header("J2", ["+3V3", "GP22", "GP26", "GP27", "GP28", "GP29", "GND"], "EXPANSION")
 spare["+3V3"] += p3v3
 spare["GP22"] += pico["GP22"]
 spare["GP26"] += pico["GP26"]
 spare["GP27"] += pico["GP27"]
 spare["GP28"] += pico["GP28"]
+spare["GP29"] += pico["GP29"]
 spare["GND"] += gnd
 
 # ----------------------------------------------------------------------------
