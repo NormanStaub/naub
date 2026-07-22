@@ -106,13 +106,18 @@ def encoder_pec11l(ref):
     # keeps BOM_V2's zero-detent smooth-feel intent (ex-Alps EC11E1834403).
     # Other shaft lengths: -4015F-/-4025F-; detented feel: detent codes 1/2/3.
     # Footprint pads are lettered to match these pin numbers — no reconcile needed.
+    # SH = the two plated mounting lugs on the metal frame. Tied to GND below:
+    # they are the parts a user grabs, so a floating shaft would dump ESD through
+    # the encoder contacts into the GPIO, and lugs soldered into the pour hold
+    # far better against twisting/pressing than lugs in isolated holes.
     return Part(name="PEC11L", ref_prefix="SW", value="PEC11L-4020F-S0020", ref=ref, tool=SKIDL,
                 footprint="naub:RotaryEncoder_Bourns_PEC11L-4xxxF-Sxxxx_Vertical",
                 pins=[Pin(num="A", name="A", func=PASSIVE),
                       Pin(num="C", name="C", func=PASSIVE),
                       Pin(num="B", name="B", func=PASSIVE),
                       Pin(num="S1", name="S1", func=PASSIVE),
-                      Pin(num="S2", name="S2", func=PASSIVE)])
+                      Pin(num="S2", name="S2", func=PASSIVE),
+                      Pin(num="SH", name="SH", func=PASSIVE)])
 
 
 def choc_switch(ref):
@@ -197,9 +202,9 @@ pico["GND"] += gnd          # connects ALL pads named GND at once (edge + back +
 # SWD breakout (module back pads are buried once soldered down — bring
 # SWCLK/SWDIO/GND out to a header; route from the three solder-through holes)
 swd = pin_header("J1", ["SWCLK", "GND", "SWDIO"], "SWD")
-swd["SWCLK"] += pico["SWCLK"]
+n_swclk = Net("SWCLK"); n_swclk += pico["SWCLK"], swd["SWCLK"]
 swd["GND"] += gnd
-swd["SWDIO"] += pico["SWDIO"]
+n_swdio = Net("SWDIO"); n_swdio += pico["SWDIO"], swd["SWDIO"]
 
 # ----------------------------------------------------------------------------
 # Encoders ×4  (A/B: 10nF debounce, SW: 100nF debounce; internal pull-ups)
@@ -219,6 +224,7 @@ for i, (name, a_gp, b_gp, sw_gp) in enumerate(ENCODERS, start=1):
     nsw += pico[sw_gp], enc["S1"]
     enc["C"] += gnd
     enc["S2"] += gnd
+    enc["SH"] += gnd            # metal frame lugs → ground (ESD path + retention)
     ca = C("10nF", ref=f"C_{name}_A"); ca[1] += na; ca[2] += gnd
     cb = C("10nF", ref=f"C_{name}_B"); cb[1] += nb; cb[2] += gnd
     csw = C("100nF", ref=f"C_{name}_SW"); csw[1] += nsw; csw[2] += gnd
@@ -231,19 +237,20 @@ for i, (name, a_gp, b_gp, sw_gp) in enumerate(ENCODERS, start=1):
 BUTTONS = [("BTN1", "GP6"), ("BTN2", "GP7"), ("BTN3", "GP20"), ("BTN4", "GP21"), ("BTN5", "GP22")]
 for i, (name, gp) in enumerate(BUTTONS, start=5):   # SW5..SW9 (encoders took SW1..SW4)
     btn = choc_switch(ref=f"SW{i}")
-    btn[1] += pico[gp]
+    nbtn = Net(name)                    # BTN1..BTN5 — named so the layout reads clearly
+    nbtn += pico[gp], btn[1]
     btn[2] += gnd
 
 # ----------------------------------------------------------------------------
 # Display — EA DOGM128W-6 (ST7565R)
 # ----------------------------------------------------------------------------
 dog = dogm128()
-# 4-wire SPI (write-only) + control
-dog["SI"] += pico["GP11"]
-dog["SCL"] += pico["GP10"]
-dog["A0"] += pico["GP8"]
-dog["RST"] += pico["GP12"]
-dog["CS1B"] += pico["GP9"]
+# 4-wire SPI (write-only) + control — named so the layout shows LCD_SCL, not N$12
+n_lcd_si  = Net("LCD_SI");  n_lcd_si  += pico["GP11"], dog["SI"]
+n_lcd_scl = Net("LCD_SCL"); n_lcd_scl += pico["GP10"], dog["SCL"]
+n_lcd_a0  = Net("LCD_A0");  n_lcd_a0  += pico["GP8"],  dog["A0"]
+n_lcd_rst = Net("LCD_RST"); n_lcd_rst += pico["GP12"], dog["RST"]
+n_lcd_cs  = Net("LCD_CS");  n_lcd_cs  += pico["GP9"],  dog["CS1B"]
 # power
 dog["VDD"] += p3v3
 dog["VDD2"] += p3v3
@@ -258,14 +265,19 @@ def cp(ref):
 
 # 3 flying caps (pump stages) — per EA datasheet p.4 "Single Supply 3.0/3.3V"
 # schematic: CAP1P–CAP1N, CAP2P–CAP2N, and CAP3P–CAP1N (CAP3 shares CAP1N).
-c1 = cp("C_CP1"); c1[1] += dog["CAP1P"]; c1[2] += dog["CAP1N"]
-c2 = cp("C_CP2"); c2[1] += dog["CAP2P"]; c2[2] += dog["CAP2N"]
-c3 = cp("C_CP3"); c3[1] += dog["CAP3P"]; c3[2] += dog["CAP1N"]  # RESOLVED: CAP1N, not VOUT/VSS
+n_cap1n = Net("LCD_CAP1N")                       # shared by CP1 and CP3
+n_cap1p = Net("LCD_CAP1P"); n_cap2p = Net("LCD_CAP2P")
+n_cap2n = Net("LCD_CAP2N"); n_cap3p = Net("LCD_CAP3P")
+c1 = cp("C_CP1"); n_cap1p += dog["CAP1P"], c1[1]; n_cap1n += dog["CAP1N"], c1[2]
+c2 = cp("C_CP2"); n_cap2p += dog["CAP2P"], c2[1]; n_cap2n += dog["CAP2N"], c2[2]
+c3 = cp("C_CP3"); n_cap3p += dog["CAP3P"], c3[1]; n_cap1n += c3[2]  # RESOLVED: CAP1N, not VOUT/VSS
 # 1 reservoir cap on the boosted output
-c_vout = cp("C_VOUT"); c_vout[1] += dog["VOUT"]; c_vout[2] += gnd
+n_lcd_vout = Net("LCD_VOUT")
+c_vout = cp("C_VOUT"); n_lcd_vout += dog["VOUT"], c_vout[1]; c_vout[2] += gnd
 # 5 LCD-bias divider caps V0..V4 → GND
 for v in ("V0", "V1", "V2", "V3", "V4"):
-    cv = cp(f"C_{v}"); cv[1] += dog[v]; cv[2] += gnd
+    nv = Net(f"LCD_{v}")
+    cv = cp(f"C_{v}"); nv += dog[v], cv[1]; cv[2] += gnd
 
 # ----------------------------------------------------------------------------
 # Backlight — EA LED55X46-A (amber, Vf≈1.9V), through the DOGM128 footprint
@@ -280,13 +292,15 @@ n_bl_k = Net("BL_CATHODE"); n_bl_g = Net("BL_PWM_GATE")
 for i in (1, 2, 3):
     r = R("300", ref=f"R_BL{i}")
     r[1] += vsys
-    r[2] += dog[f"A{i}"]
+    n_bl_a = Net(f"BL_A{i}"); n_bl_a += r[2], dog[f"A{i}"]
     dog[f"C{i}"] += n_bl_k
 q_bl = nmos_2n7002(ref="Q1")
 q_bl["D"] += n_bl_k
 q_bl["S"] += gnd
 q_bl["G"] += n_bl_g
-r_g = R("100", ref="R_BL_G"); r_g[1] += pico["GP13"]; r_g[2] += n_bl_g     # gate series
+r_g = R("100", ref="R_BL_G")
+n_bl_pwm = Net("BL_PWM"); n_bl_pwm += pico["GP13"], r_g[1]                 # MCU side
+r_g[2] += n_bl_g                                                          # gate series
 r_gs = R("10k", ref="R_BL_GS"); r_gs[1] += n_bl_g; r_gs[2] += gnd          # gate pulldown
 
 # ----------------------------------------------------------------------------
