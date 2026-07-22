@@ -224,10 +224,12 @@ for i, (name, a_gp, b_gp, sw_gp) in enumerate(ENCODERS, start=1):
     csw = C("100nF", ref=f"C_{name}_SW"); csw[1] += nsw; csw[2] += gnd
 
 # ----------------------------------------------------------------------------
-# Aux buttons ×4 (Choc, active-low, internal pull-up, no diodes)
+# Aux buttons ×5 (Choc, active-low, internal pull-up, no diodes)
+#   BTN3/4/5 all come off the module's back-pad row (GP20/21/22) — same route class.
+#   BTN5 claims GP22 (was the J2 "spare"); J2 keeps its 4 ADC pins GP26-29.
 # ----------------------------------------------------------------------------
-BUTTONS = [("BTN1", "GP6"), ("BTN2", "GP7"), ("BTN3", "GP20"), ("BTN4", "GP21")]
-for i, (name, gp) in enumerate(BUTTONS, start=5):   # SW5..SW8 (encoders took SW1..SW4)
+BUTTONS = [("BTN1", "GP6"), ("BTN2", "GP7"), ("BTN3", "GP20"), ("BTN4", "GP21"), ("BTN5", "GP22")]
+for i, (name, gp) in enumerate(BUTTONS, start=5):   # SW5..SW9 (encoders took SW1..SW4)
     btn = choc_switch(ref=f"SW{i}")
     btn[1] += pico[gp]
     btn[2] += gnd
@@ -295,19 +297,14 @@ c_bulk[1] += p3v3; c_bulk[2] += gnd
 c_dec = C("100nF", ref="C_DEC"); c_dec[1] += p3v3; c_dec[2] += gnd
 
 # ----------------------------------------------------------------------------
-# Optional expansion header (PCB_NOTES open item): spare GP22 + ADC GP26-29
-#   GP26-28 reserved for a future fader/pot; GP29 = bonus ADC the Pico kept
-#   internal (47R series on-module on GP27/28/29 — harmless for GPIO/ADC).
-#   Comment out if you don't want it.
+# Spare ADC pins — GP26/27/28/29: DELIBERATELY UNROUTED (no expansion header)
+#   The old J2 breakout was dropped: the control set is final (4 encoders +
+#   5 keys + display) and the enclosure is sealed, so an internal header buys
+#   little while costing 6 traces on a crowded 2-layer board.
+#   These pins stay reserved simply by being unconnected. If a fader/pot is ever
+#   wanted, each of GP26-29 has its own 1.0mm through-hole in the module
+#   footprint's edge ring — tack a wire there instead of respinning for a header.
 # ----------------------------------------------------------------------------
-spare = pin_header("J2", ["+3V3", "GP22", "GP26", "GP27", "GP28", "GP29", "GND"], "EXPANSION")
-spare["+3V3"] += p3v3
-spare["GP22"] += pico["GP22"]
-spare["GP26"] += pico["GP26"]
-spare["GP27"] += pico["GP27"]
-spare["GP28"] += pico["GP28"]
-spare["GP29"] += pico["GP29"]
-spare["GND"] += gnd
 
 # ----------------------------------------------------------------------------
 # Emit
