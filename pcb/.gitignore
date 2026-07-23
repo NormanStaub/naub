@@ -4,3 +4,11 @@ naub_v2.net
 *.erc
 *.log
 skidl_REPL.*
+
+# KiCad local / temporary files (not design source)
+*.lck
+*.kicad_prl
+.history/
+
+# Freerouting export/scratch (regenerate from the board)
+*.dsn
