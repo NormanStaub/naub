@@ -160,10 +160,28 @@ RP2350 internal pull-up ≈ **50–80 kΩ**. Using 50 kΩ:
 - **SW (100 nF):** ideal — 5 ms swamps switch bounce, press events are slow. Keep.
 - **A/B (10 nF): adequate but on the slow side.** With only the internal pull-up,
   τ ≈ 500 µs (up to ~800 µs at 80 kΩ). That's fine for hand-spin pulse periods (ms
-  range), but this is a **20-PPR** encoder (PEC11L) you may spin fast — the edges
-  get rounded. *(Since the encoder moved to the 20-detent `-4115F-S0020`, the
-  detents cap realistic spin speed, so this margin only improves — PPR is
-  unchanged at 20, so every figure in this section still holds.)* **It will work; flag for the prototype:** if you see missed/!jittery
+  range), but you may spin the knob fast — the edges get rounded.
+
+  > **Updated for the `-4215F-S0015` encoder (30 detents / 15 pulses).** This
+  > section was written against a **20-PPR** part; the encoder is now **15 PPR**,
+  > which *lowers* the electrical rate at any given RPM by 25 %. Redoing §2.1's
+  > figure: the same ~200 pulses/s limit now corresponds to **~13 rev/s (~800 RPM)**
+  > rather than 10 rev/s, and the detents cap realistic spin speed well below that.
+  > The margin is strictly better than the analysis below assumes.
+  >
+  > **Half-step decoding (`divisor = 2`) does not erode this.** The firmware now
+  > counts half-cycles to get one count per detent (see BOM_V2). That changes how
+  > many *counts* a cycle yields, not the edge rate or the RC behaviour. Quadrature
+  > decode also remains inherently bounce-tolerant at `divisor = 2`: contact
+  > chatter oscillates between two adjacent states, which nets to zero either way.
+  > Both detent rest positions on a 2:1 part (`00` and `11`) are stable states, not
+  > mid-transition, so the shaft never idles on an edge.
+  >
+  > Residual difference, for the prototype log: at `divisor = 2` a single
+  > uncancelled edge shows up as a ±1 count (±2 volume units at `STEP = 2`) instead
+  > of being absorbed inside a full cycle. Self-correcting on the next click.
+
+  **It will work; flag for the prototype:** if you see missed/!jittery
   counts at speed, either drop A/B to **4.7 nF** (τ ≈ 250 µs) or add **10 kΩ external
   pull-ups** on A/B (τ ≈ 100 µs, the classic Bourns/Alps figure). I'd lay out the
   footprints to allow the 10 kΩ option (DNP by default) so it's a no-respin fix.

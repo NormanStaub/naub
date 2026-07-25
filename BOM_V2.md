@@ -15,7 +15,7 @@
 | # | Component | V1 part | V2 part | Why |
 |---|-----------|---------|---------|-----|
 | 0 | **Controller** | Raspberry Pi Pico (V1 hand-wire; Pico 2 was the interim V2 plan) | **Waveshare RP2350-Tiny** + USB-C adapter board over 8-pin FPC (kit) | Pico 2 + its onboard USB jack don't fit the final layout; the Tiny splits USB onto a separate 18×18 mm **panel-mount** adapter. Same RP2350A silicon as the Pico 2 |
-| 1 | Rotary encoder | Bourns PEC11R-4220F-S0024 (24 detent, capped feel) | **Bourns PEC11L-4115F-S0020** (low profile, 20 detents, 15 mm shaft) | Detented click retained (1 detent = 1 count) + **low-profile body** and **short shaft** for a slimmer stack; supersedes the interim Alps EC11E1834403 pick |
+| 1 | Rotary encoder | Bourns PEC11R-4220F-S0024 (24 detent, capped feel) | **Bourns PEC11L-4215F-S0015** (low profile, 30 detents, 15 mm shaft) | **Finer 12° detent** (30/rev vs V1's 24) + **low-profile body** and **short shaft** for a slimmer stack; supersedes the interim Alps EC11E1834403 pick. Needs `divisor = 2` in firmware — see below |
 | 2 | ~~Damping grease~~ | — | ~~Nye Nyogel 767A~~ — **dropped** | Existed to add weight to a *detentless* shaft; with detent code `1` the click provides the feel and grease would only mush it |
 | 3 | **Display** | Waveshare 2.9" e-Paper (296×128, SSD1680, SPI) | **EA DOGM128W-6** — 128×64 amber **STN LCD** (FSTN positive, transflective, ST7565R, SPI) | Amber-backlit "classic" look; pixel-addressable; ~30–60 fps live volume bars vs e-paper's 1–2 fps |
 | 4 | **Display backlight** | — (e-paper needs none) | **EA LED55X46-A** (amber LED backlight, separate snap/solder board) | True ~605 nm amber via the backlight LED, not a filter; single-color = one backlight line |
@@ -68,13 +68,13 @@ taps VSYS on the carrier (PCB_DESIGN §3, was VBUS).
 [PCB_DESIGN.md](PCB_DESIGN.md) — pin-map fix, VSYS rail note, hybrid
 castellation + solder-through-hole module footprint, netlist swap.
 
-### Encoder — Bourns PEC11L-4115F-S0020 (supersedes the Alps EC11E pick)
+### Encoder — Bourns PEC11L-4215F-S0015 (supersedes the Alps EC11E pick)
 
 | Spec | Value |
 |------|-------|
 | Type | Incremental mechanical rotary, 2-phase (A/B), 11 mm **low profile** |
-| Detents | **20 — detent code `1`** (see the detent/pulse table below) |
-| Resolution | 20 PPR — **1:1 with the detents (one count per click)** |
+| Detents | **30 — detent code `2`** — 12°/click (see the detent/pulse table below) |
+| Resolution | 15 PPR — **2 detents per pulse; needs `divisor = 2`** (→ 30 counts/rev) |
 | Push switch | Integrated SPST momentary (click-to-mute/select retained) |
 | Shaft | 6 mm flatted metal shaft, **15 mm** (20 / 25 mm variants exist) |
 | Bushing / mount | M7×0.75 threaded, nut + washer bundled |
@@ -102,24 +102,39 @@ sits lower; re-check knob height against the panel before printing a batch.
 
 #### Detent / pulse options (PEC11L "How to Order", detent digit)
 
-| Detent code | Detents / rev | Pulses / rev | Counts per detent (`divisor = 4`) |
-|---|---|---|---|
-| 0 | none | 15 or 20 | n/a (continuous) |
-| **1 (chosen)** | **20** | **20** | **1 — one count per click** |
-| 2 | 30 | 15 | ½ — every other click is dead |
-| 3 | 18 | 9 | ½ — every other click is dead |
+| Detent code | Detents / rev | Pulses / rev | Detent angle | Required `divisor` |
+|---|---|---|---|---|
+| 0 | none | 15 or 20 | — | 4 (continuous) |
+| 1 | 20 | 20 | 18° | 4 (default) |
+| **2 (chosen)** | **30** | **15** | **12°** | **2** |
+| 3 | 18 | 9 | 20° | 2 |
 
-**Why code `1` and not `2`.** Codes 2 and 3 put **two detents per quadrature
-cycle**. `rotaryio.IncrementalEncoder` defaults to `divisor = 4` (one count per
-full cycle), so those variants would emit one count per *two* clicks — half the
-detents do nothing. Recovering them needs `divisor = 2`, i.e. half-step decoding
-on a contacting encoder, which is the jitter-prone mode. Code `1` is 1:1 and
-needs **no firmware change at all** (`STEP = 2` still means 2 volume units per
-click; see [firmware/code.py](firmware/code.py) `STEP` / the `encs` list).
+**Why code `2`.** It gives the **finest detent Bourns offers in this series** —
+30 clicks/rev at 12° apart, versus 20 clicks at 18° for code `1` and V1's 24 at
+15°. Combined with `STEP = 2` that's 60 volume units per turn, so a full 0–100
+sweep is **~1.7 turns** (code `1` would be 2.5).
 
-**Resolution is unchanged at 20 PPR**, so the pull-up / RC analysis in
-[PCB_DESIGN.md](PCB_DESIGN.md) §2 stands as written — and detents cap achievable
-spin speed, so the edge-rounding headroom only improves.
+**The cost is one firmware line.** Codes 2 and 3 put **two detents per quadrature
+cycle**, and `rotaryio.IncrementalEncoder` defaults to `divisor = 4` (one count
+per *full* cycle) — which would advance the position on every second click only.
+Setting `divisor = 2` counts half-cycles instead, giving 30 counts/rev, one per
+detent. This is done in [firmware/code.py](firmware/code.py) immediately after the
+`encs` list is built.
+
+**Why half-stepping is safe here** (the concern this decision was weighed against):
+
+- Quadrature decode is inherently bounce-tolerant at any divisor — contact chatter
+  oscillates between two *adjacent* states, and those sub-counts cancel.
+- Both detent rest positions on a 2:1 part are **stable** quadrature states (`00`
+  and `11`), not mid-transition, so the shaft never idles on an edge.
+- At **15 PPR this part is electrically slower than the 20-PPR alternative** — 25 %
+  fewer edges per revolution — so the RC filter in [PCB_DESIGN.md](PCB_DESIGN.md)
+  §2 has *more* margin, not less. That section's ~200 pulses/s limit corresponds to
+  ~13 rev/s here, versus ~10 rev/s at 20 PPR.
+
+Residual difference worth logging at bring-up: at `divisor = 2` a single
+uncancelled edge surfaces as a ±1 count (±2 volume units) instead of being absorbed
+inside a full cycle. It self-corrects on the next click.
 
 ### ~~Damping grease — Nye Nyogel 767A~~ (dropped)
 
@@ -208,11 +223,14 @@ schematic / LED55X46-A datasheet — not invented here.
 
 ## Design implications (firmware, no hardware change)
 
-- **No firmware change required.** 20 detents / 20 pulses is 1:1, so the default
-  `rotaryio` `divisor = 4` yields one count per click, exactly as V1's 24/24
-  PEC11R did. `STEP = 2` still means 2 volume units per detent.
-- **Slightly coarser than V1:** 20 clicks/rev vs V1's 24, so a full 0–100 sweep
-  is 2.5 turns (was ~2.1). Bump `STEP` to 3 if that feels too slow.
+- **One firmware line:** `divisor = 2` on each encoder (30 detents / 15 pulses is
+  2:1). Done in [firmware/code.py](firmware/code.py) after the `encs` list.
+- **Finer than V1:** 30 clicks/rev vs V1's 24 (12° vs 15° per click). At the
+  unchanged `STEP = 2` a full 0–100 sweep is **~1.7 turns** (V1 was ~2.1). Drop
+  `STEP` to 1 if that feels too fast — 100 units would then be ~3.3 turns.
+- `SETTLE_S = 0.13` is unchanged, but note detents are now closer together, so a
+  slow scroll produces slightly tighter gaps between events. Re-check at bring-up
+  that the bar isn't repainting mid-turn.
 - Click-to-mute/select is unaffected (switch retained).
 
 ---
@@ -254,10 +272,13 @@ schematic / LED55X46-A datasheet — not invented here.
 - RP2350-Tiny 2D drawing (DXF, for the carrier footprint) — <https://files.waveshare.com/wiki/RP2350-Tiny/RP2350_Tiny_DXF.zip>
 - CircuitPython build for the RP2350-Tiny — <https://circuitpython.org/board/waveshare_rp2350_tiny/>
 - Bourns PEC11L series datasheet (REV. 04/26) — <https://www.bourns.com/docs/Product-Datasheets/PEC11L.pdf>
-- PEC11L-4115F-S0020 (DigiKey) — <https://www.digikey.com/en/products/detail/bourns-inc/PEC11L-4115F-S0020/4699168>
-- PEC11L-4115F-S0020 (Mouser) — <https://www.mouser.com/ProductDetail/Bourns/PEC11L-4115F-S0020>
-- PEC11L-4220F-S0015 (Newark) — the 30-detent/15-pulse variant we rejected, listed
-  explicitly as "15 PPR, 30 Detents" — <https://www.newark.com/bourns/pec11l-4220f-s0015/incremental-encoder-15-pulses/dp/20T1492>
+- PEC11L-4215F-S0015 (DigiKey, ~$2.48) — <https://www.digikey.com/en/products/detail/bourns-inc/PEC11L-4215F-S0015/4699176>
+- PEC11L-4215F-S0015 (Mouser) — <https://www.mouser.com/ProductDetail/Bourns/PEC11L-4215F-S0015>
+- PEC11L-4220F-S0015 (Newark) — same detent/resolution, 20 mm shaft; its listing
+  states the pairing explicitly as "15 PPR, 30 Detents" —
+  <https://www.newark.com/bourns/pec11l-4220f-s0015/incremental-encoder-15-pulses/dp/20T1492>
+- PEC11L-4115F-S0020 (DigiKey) — the 1:1 alternative, 20 detents / 20 pulses,
+  needs no `divisor` line — <https://www.digikey.com/en/products/detail/bourns-inc/PEC11L-4115F-S0020/4699168>
 - Alps EC11 series datasheet — <https://www.avnet.com/fsp/opasdata/d120001/medias/docus/196/Alps-Alpine-EC11-Series-EN-Datasheet.pdf>
 - EA DOGM128W-6 (128×64 FSTN+ STN LCD, ST7565R) — <https://www.lcd-module.com/eng/pdf/grafik/dogm128e.pdf>
 - EA LED55X46-A amber backlight — <https://shop.lcd-module.com/>

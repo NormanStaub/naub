@@ -42,10 +42,13 @@
 - Strain-relieve the micro plug in the jack (glue/clip) so it can't vibrate out.
 
 ### Encoders (×4)
-- **Bourns PEC11L-4115F-S0020** (11 mm low profile, **20 detents / 20 PPR**,
+- **Bourns PEC11L-4215F-S0015** (11 mm low profile, **30 detents / 15 PPR**,
   **15 mm shaft**), board-mounted (PC pins to PCB). Supersedes the Alps
   EC11E1834403 pick and the earlier detentless -4020F-S0020 — see BOM_V2.
-  Detent code `1` is 1:1 detents-to-pulses; codes 2/3 are not — don't substitute.
+  Detent code `2` is **2 detents per pulse** — the firmware compensates with
+  `divisor = 2`. Substituting any other detent code requires changing that line.
+  All PEC11L `-4xxxF-Sxxxx` share one body and pinout, so the footprint is
+  unaffected by detent/resolution choice.
 - **Nut-secured to the top panel** (M7×0.75 bushing + nut + washer, bundled).
   **Panel-to-PCB gap changes vs the old EC11E figure (≈6.5 mm)** — the PEC11L
   body is shallower (body depth ≈ 4.5 mm off the PCB per the datasheet side

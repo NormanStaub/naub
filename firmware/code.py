@@ -392,6 +392,16 @@ encs = [rotaryio.IncrementalEncoder(board.GP0, board.GP1),
         rotaryio.IncrementalEncoder(board.GP3, board.GP4),
         rotaryio.IncrementalEncoder(board.GP14, board.GP15),
         rotaryio.IncrementalEncoder(board.GP17, board.GP18)]
+
+# The Bourns PEC11L-4215F-S0015 has 30 detents but only 15 pulses/rev, i.e. TWO
+# detents per quadrature cycle. rotaryio's default divisor=4 counts once per full
+# cycle, which would advance the position on every SECOND click. divisor=2 counts
+# half-cycles -> 30 counts/rev, one per detent.
+# If you ever fit a 1:1 encoder (detent code 1, e.g. -4115F-S0020), delete this.
+for _e in encs:
+    if _e is not None:
+        _e.divisor = 2
+
 sws  = [inp(board.GP2), inp(board.GP5), inp(board.GP16), inp(board.GP19)]
 btn  = None                              # Button 1 (GP6) disconnected for now
 # Encoders are read as RELATIVE deltas, not absolute position, so a host `level`
