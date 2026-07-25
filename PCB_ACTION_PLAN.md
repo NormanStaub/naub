@@ -408,6 +408,27 @@ I wrote a pass to nudge those refdes clear and **deleted it** — it made the me
 while KiCad's rule is something else. Fixing it properly means looping against DRC the way
 the GND stitching now does. See `pcb/ROUTING.md`.
 
+**Verified after the fact, against the previous revision rather than against intuition.**
+The routed board looks alarming in the PCB editor — a large void through the middle of
+B.Cu — so it was measured:
+
+| | routed, old placement | routed, new placement |
+|---|---|---|
+| B.Cu pour | 3426 mm² | 3432 mm² |
+| F.Cu pour | 4254 mm² | 4327 mm² |
+| B.Cu pieces / largest | 19 / 79.5 % | 19 / 78.4 % |
+| F.Cu pieces / largest | 6 / 96.5 % | 7 / 96.1 % |
+
+The void is the price of 693 segments on two layers and predates this change; the
+re-placement improved the pour slightly on both layers. F.Cu remains 96 % one piece.
+
+This also **closes the standing `PCB_DESIGN` §4.2 caveat** — carried for two commits as
+"the router cannot know the charge-pump caps want small loop area." Fixing the placement
+underneath the router settled it: `LCD_CAP1N` 8.2 → 1.8 mm, `CAP1P` 2.0 → 1.0,
+`CAP2P`/`2N` 1.5 → 1.0, `CAP3P` 1.6 → 1.1, `LCD_VOUT` 6.6 → 2.0, `LCD_V0` 13.4 → 3.1,
+`BL_PWM_GATE` 37.5 → 2.3. Every charge-pump net is now about a millimetre of copper with
+its cap on the pin.
+
 Also fixed here: `board_model.py` was computing pad angles as `footprint + pad` when
 KiCad stores them **absolute**. Latent on this board — every pad stores 180 and every
 footprint sits at a multiple of 90 — but it would have produced wrong geometry the moment

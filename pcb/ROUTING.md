@@ -114,6 +114,42 @@ charge-pump caps around U2 want small loop area (`PCB_DESIGN` §4.2). Hand-routi
 better; machine-routing plus a review pass was the right trade for a first spin that mainly
 needs to be fabricable and probeable.
 
+That §4.2 caveat was carried for two commits as "the router cannot know this, go and look."
+It is now satisfied — not by the router, but by fixing the *placement* underneath it
+(`place_passives.py`). Measured routed copper per net, before and after:
+
+| net | before | after |
+|---|---|---|
+| `LCD_CAP1N` | 8.2 mm | **1.8 mm** |
+| `LCD_CAP1P` | 2.0 mm | 1.0 mm |
+| `LCD_CAP2P` / `2N` | 1.5 mm | 1.0 mm |
+| `LCD_CAP3P` | 1.6 mm | 1.1 mm |
+| `LCD_VOUT` | 6.6 mm | 2.0 mm |
+| `LCD_V0` | 13.4 mm | 3.1 mm |
+| `BL_PWM_GATE` | 37.5 mm | **2.3 mm** |
+
+Every charge-pump net is about a millimetre of copper with the cap sitting on its pin and
+returning through adjacent pour, so the loop is small for the reason that actually matters.
+The lesson generalises: a router cannot rescue bad placement, and the cheapest way to get
+good loop area out of a cost-minimising router is to leave it no long path to find.
+
+**Pour health, measured rather than eyeballed.** Routing a 2-layer board carves the plane
+up, and it looks alarming in the PCB editor. It is worth checking against the previous
+revision instead of against intuition:
+
+| | routed, old placement | routed, new placement |
+|---|---|---|
+| B.Cu pour | 3426 mm² | 3432 mm² |
+| F.Cu pour | 4254 mm² | 4327 mm² |
+| B.Cu pieces / largest | 19 / 79.5 % | 19 / 78.4 % |
+| F.Cu pieces / largest | 6 / 96.5 % | 7 / 96.1 % |
+
+F.Cu stays 96 % one contiguous piece, which is the whole point of preferring B.Cu for
+signals. B.Cu is 19 pieces with the largest at 78 %; all of them reach the net through vias
+or through-hole pads (island removal is on, and DRC reports zero unconnected), so the cost
+is some ground return detouring via F.Cu -- acceptable at this board's speeds, and worth
+re-checking if anything fast is ever added.
+
 ## When to stop using this
 
 Rewrite the decision — and pay the Freerouting setup cost, or route by hand — if any of
