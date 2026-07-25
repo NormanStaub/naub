@@ -6,6 +6,12 @@ Thumbs.db
 desktop.ini
 .DS_Store
 
+# CAD working files (mesh/step/blend/renders) — too large for git.
+# Exception: DXF layout drawings are small and drive the PCB outline, so track them.
+CAD/**
+!CAD/**/
+!CAD/**/*.dxf
+
 # Python (host helper)
 __pycache__/
 *.py[cod]
