@@ -117,6 +117,7 @@ class Board:
     def _read_pads(self):
         self.pads = []
         self.footprints = []
+        self.courtyard = {}
         for fp in find(self.tree, 'footprint'):
             at = first(fp, 'at')
             fx, fy = float(at[1]), float(at[2])
@@ -127,6 +128,26 @@ class Board:
                     ref = p[2]
             flay = val(fp, 'layer', 1, str)
             self.footprints.append((ref, fx, fy, fang, flay))
+            # Courtyard, in footprint-local coords, for the footprint's own side.
+            # Pads alone do not describe a body: U1 is a module on B.Cu and the
+            # whole area between its castellation rows is occupied by the module
+            # itself, which pad-based collision checking cannot see.
+            cyx, cyy = [], []
+            for kind in ('fp_rect', 'fp_poly', 'fp_line', 'fp_circle'):
+                for g in find(fp, kind):
+                    lay = val(g, 'layer', 1, str, '')
+                    if 'CrtYd' not in (lay or ''):
+                        continue
+                    for k in ('start', 'end', 'center'):
+                        for p in find(g, k):
+                            cyx.append(float(p[1]))
+                            cyy.append(float(p[2]))
+                    for pts in find(g, 'pts'):
+                        for p in find(pts, 'xy'):
+                            cyx.append(float(p[1]))
+                            cyy.append(float(p[2]))
+            self.courtyard[ref] = ((min(cyx), min(cyy), max(cyx), max(cyy))
+                                   if cyx else None)
             a = math.radians(-fang)
             ca, sa = math.cos(a), math.sin(a)
             for pd in find(fp, 'pad'):
@@ -138,7 +159,16 @@ class Board:
                 pang = float(pat[3]) if len(pat) > 3 else 0.0
                 p.x = fx + lx * ca - ly * sa
                 p.y = fy + lx * sa + ly * ca
-                p.angle = fang + pang
+                # A pad's stored `at` angle is ABSOLUTE, not relative to the
+                # footprint. Established by experiment, not assumption: rotating a
+                # footprint's `at` angle while leaving its pad angles untouched made
+                # DRC report lib_footprint_mismatch on exactly those parts, which can
+                # only happen if the pad's library-relative angle changed -- i.e. if
+                # the stored value is absolute. (Every pad on this board stores 180
+                # and every footprint sits at a multiple of 90, so the old
+                # fang + pang form happened to give identical geometry throughout;
+                # the error was latent, not active.)
+                p.angle = pang
                 sz = first(pd, 'size')
                 p.w, p.h = float(sz[1]), float(sz[2])
                 p.layers = set(first(pd, 'layers')[1:])

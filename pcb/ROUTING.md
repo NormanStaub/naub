@@ -129,13 +129,52 @@ these become true:
 - **Placement is still moving a lot.** Re-routing is one command, so this is currently an
   argument *for* the script — but only while the router keeps succeeding trivially.
 
+## Do not try to predict the zone filler
+
+The single most expensive mistake in this work was modelling a KiCad rule instead of
+measuring it. `pour_map()` exists to catch GND pads that the routing has fenced out of
+the pour, and it is genuinely useful — but it went through **three** refinements, each of
+which still called `C_V1.2` healthy while KiCad's own fill left it unconnected:
+
+1. flood-fill with a 1-cell erosion,
+2. a stricter 2-cell erosion,
+3. real thermal-spoke counting against `min_resolved_spokes`.
+
+Only then did the actual bug surface, and it was not in the model at all: the stitching
+routine let the rescued pad's *own* cell qualify as a via target whenever the pour passed
+within a via's reach on the far side of a trace. A\* returned a single-cell path,
+`commit()` emitted neither segment nor via, and `stitch()` reported success having done
+nothing. The pad stayed open through every "fix".
+
+The same lesson repeated on silkscreen. A pass to nudge reference designators off pads
+scored candidate positions against pad overlap — and made it worse (`silk_over_copper`
+33 → 37, `silk_overlap` 19 → 35), because KiCad's rule is not the rule I implemented.
+That pass was deleted rather than shipped.
+
+**So: the model gets you most of the way in one pass, and DRC decides.** `--force-stitch`
+exists for exactly this — feed it the pads DRC reports and stop arguing with the filler.
+
 ## Reproducing
 
 ```sh
-python route_board.py naub_kicad.kicad_pcb out.kicad_pcb
+python place_passives.py naub_kicad.kicad_pcb placed.kicad_pcb    # optional
+python route_board.py placed.kicad_pcb out.kicad_pcb
 kicad-cli pcb drc --refill-zones --save-board --format json -o drc.json out.kicad_pcb
+# if DRC reports unconnected GND pads, name them and route again:
+python route_board.py placed.kicad_pcb out.kicad_pcb --force-stitch=C_V1.2
 ```
 
-The second line is not optional. `--refill-zones` also solves a problem that had been
-muddying every DRC reading in this project: without it, DRC measures the *stale* zone fill
-and invents ~90–500 phantom clearance violations that have nothing to do with geometry.
+The DRC line is not optional, and neither is the loop. `--refill-zones` also solves a
+problem that had been muddying every DRC reading in this project: without it, DRC measures
+the *stale* zone fill and invents ~90–500 phantom clearance violations that have nothing to
+do with geometry.
+
+## A format fact worth keeping
+
+A pad's stored `at` angle in `.kicad_pcb` is **absolute**, not relative to its footprint.
+This was established by experiment rather than assumption: rotating a footprint's `at`
+angle while leaving its pads alone made DRC report `lib_footprint_mismatch` on exactly the
+11 parts rotated and nothing else, which can only happen if the pad's library-relative
+angle changed. `board_model.py` had been computing `fang + pang`; every pad on this board
+stores 180 and every footprint sits at a multiple of 90, so the error produced identical
+geometry throughout and stayed invisible until a rotation was attempted.

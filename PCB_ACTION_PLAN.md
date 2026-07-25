@@ -365,6 +365,54 @@ being three physically separate pads. That last one silently dropped a pad from 
 This also closes **§1.4** (netlist re-imported, all 6 pads have nets) and **§2.2** (zones
 refilled; `kicad-cli pcb drc --refill-zones --save-board` does it without the GUI).
 
+### D4. Passive placement reworked, board re-routed
+`pcb/place_passives.py` re-places the back-side R/C/Q against the pins they serve, then
+`route_board.py` re-routes. UI and mechanical parts were treated as fixed: U2, SW1–SW9,
+the mounting holes, U1 (set by the adapter FPC), and the bring-up hooks.
+
+**The defect this was really about:** `C_DEC`, the decoupling cap for the module's 3V3
+rail, sat **22.6 mm** from U1's 3V3 pad. At that distance loop inductance (~1 nH/mm)
+swamps the capacitor — it was decoupling nothing above a few MHz. The passives had been
+dropped in convenient clumps at the display end of the board rather than placed.
+
+| | before | after |
+|---|---|---|
+| `C_DEC` → U1.3V3 | 22.59 mm | **2.59 mm** |
+| `C_BULK` → U1.3V3 | 28.58 mm | 6.25 mm |
+| `C_LCD_VDD` → U2.VDD | 5.81 mm | 1.89 mm |
+| copper | 1120.8 mm | 1045.5 mm |
+| segments / vias | 779 / 24 | 693 / 18 |
+| unconnected | 0 | 0 |
+
+25 parts moved. Sum of pad-to-anchor distance over those parts: 282.4 → 127.3 mm.
+`R_BL_G` moved to Q1's gate (25.2 mm → 3.8 mm): a series gate resistor belongs at the
+gate, with the low-impedance PWM output making the long run, not the high-impedance gate
+node. `R_BL1` was the farthest of the three backlight resistors from its own anode pin
+and is now the nearest.
+
+One deliberate exception to "hooks are fixed": **J_ADC moved 2 mm right and the four
+bench-supply pads 2 mm with it.** J_ADC's courtyard walled off the entire 3V3/GND row on
+U1's power corner, which is the only place C_DEC can do its job. J_ADC's stubs grow ~2 mm
+and its comb stays aligned; that is a good trade for real decoupling.
+
+**DRC: 140, against 120 before — and the entire +20 is silkscreen** (`silk_over_copper`
++18, `silk_edge_clearance` +2, `silk_overlap` −1), plus one more `starved_thermal`.
+**Zero hard geometry, zero unconnected.** The silk regression is refdes text dragged onto
+neighbours' pads by the parts it belongs to; it is a hand-assembly annoyance, not an
+electrical fault, and most fabs clip silk to mask. ⚠ **This is the one thing to weigh:**
+if you would rather have tidy silkscreen than 20 mm of decoupling loop, revert this
+commit. I would not.
+
+I wrote a pass to nudge those refdes clear and **deleted it** — it made the metric worse
+(`silk_over_copper` 33 → 37, `silk_overlap` 19 → 35) because it scored against pad overlap
+while KiCad's rule is something else. Fixing it properly means looping against DRC the way
+the GND stitching now does. See `pcb/ROUTING.md`.
+
+Also fixed here: `board_model.py` was computing pad angles as `footprint + pad` when
+KiCad stores them **absolute**. Latent on this board — every pad stores 180 and every
+footprint sits at a multiple of 90 — but it would have produced wrong geometry the moment
+anything was rotated. Pinned down by experiment; see `ROUTING.md`.
+
 ---
 
 ## Suggested order of work

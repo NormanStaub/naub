@@ -400,6 +400,7 @@ class Router:
 
 ZONE_CLEAR = 0.5      # zone-to-foreign-copper, from the zones' connect_pads clearance
 THERMAL_GAP = 0.5     # zone thermal_gap: how far a spoke reaches to a pad
+POUR_ERODE = 2        # cells of erosion before the flood fill (see pour_map)
 
 
 def pour_map(grid, router):
@@ -456,10 +457,20 @@ def pour_map(grid, router):
     block[:, :, :xa + 1] = True
     block[:, :, xb:] = True
 
+    # Erode by POUR_ERODE cells before flood-filling. One cell was not enough: a
+    # 0.65 mm placement gap left C_V1's ground pad reachable only down a neck that
+    # this model tolerated and KiCad's actual fill did not, so DRC found an
+    # unconnected pad the stitcher had not been told about. Under-detection here is
+    # the dangerous direction -- a missed pad is an open circuit, while a spurious
+    # one costs a via -- so the test is deliberately stricter than the real fill.
     ok = ~block
-    solid = np.zeros_like(ok)
-    solid[:, 1:-1, 1:-1] = (ok[:, :-2, 1:-1] & ok[:, 2:, 1:-1] & ok[:, 1:-1, :-2] &
-                            ok[:, 1:-1, 2:] & ok[:, 1:-1, 1:-1])
+    solid = ok.copy()
+    for _ in range(POUR_ERODE):
+        e = np.zeros_like(solid)
+        e[:, 1:-1, 1:-1] = (solid[:, :-2, 1:-1] & solid[:, 2:, 1:-1] &
+                            solid[:, 1:-1, :-2] & solid[:, 1:-1, 2:] &
+                            solid[:, 1:-1, 1:-1])
+        solid = e
     return solid, gnd_id
 
 
@@ -491,7 +502,40 @@ def largest_component(solid_layer):
     return seen == best, best_size
 
 
-def check_and_stitch(grid, router, board):
+def spoke_count(grid, main_layer, pad):
+    """How many of the pad's four axis directions the main pour can spoke in from.
+
+    KiCad's thermal spokes run along the pad's own axes, so probe outward from each
+    face across the thermal gap and see whether the main (non-island) pour is there.
+    """
+    a = math.radians(-pad.angle)
+    ca, sa = math.cos(a), math.sin(a)
+    n = 0
+    for ux, uy, half in ((1, 0, pad.w / 2), (-1, 0, pad.w / 2),
+                         (0, 1, pad.h / 2), (0, -1, pad.h / 2)):
+        # rotate the local direction into board space
+        bx, by = ux * ca - uy * sa, ux * sa + uy * ca
+        hit = False
+        d = half + 0.05
+        while d <= half + THERMAL_GAP + 1e-9:
+            ix, iy = grid.to_cell(pad.x + bx * d, pad.y + by * d)
+            if 0 <= iy < grid.H and 0 <= ix < grid.W and main_layer[iy, ix]:
+                hit = True
+                break
+            d += GRID
+        n += hit
+    return n
+
+
+def check_and_stitch(grid, router, board, force=()):
+    """`force` is a set of "REF.PAD" strings to stitch regardless of what the model
+    thinks. It exists because the model is not trustworthy enough on its own: three
+    successive refinements (channel erosion, then a stricter erosion, then real spoke
+    counting) all still called C_V1.2 healthy while KiCad's own fill left it
+    unconnected. Predicting a zone filler is a losing game, so the flow closes the
+    loop instead -- route, refill, ask DRC, feed the offenders back in here. DRC is
+    the authority; this model is only a way to get most of the way there in one pass.
+    """
     """Find GND pads the pour can no longer reach and drop a stitching via at each.
 
     A pad in a pocket on one layer is still rescuable through the other: F.Cu here
@@ -508,20 +552,24 @@ def check_and_stitch(grid, router, board):
     for p in board.pads:
         if p.net != 'GND':
             continue
-        connected = False
+        # Count thermal spokes, rather than merely asking whether the pour comes
+        # near. KiCad wants min_resolved_spokes (2 here) and deletes isolated
+        # islands, so a pad the pour only grazes from one side can end up genuinely
+        # unconnected -- C_V1.2 did, and a proximity test called it healthy.
+        best = 0
         for li, lname in enumerate(LAYERS):
             if not board.on_layer(p, lname):
                 continue
-            m, y0, y1, x0, x1 = grid._mask(p, THERMAL_GAP + 0.1)
-            if m is not None and (main[li][y0:y1, x0:x1] & m).any():
-                connected = True
-                break
-        if not connected:
+            best = max(best, spoke_count(grid, main[li], p))
+        if best < 2:
+            orphans.append(p)
+    for p in board.pads:
+        if p.net == 'GND' and f"{p.ref}.{p.num}" in force and p not in orphans:
             orphans.append(p)
     if not orphans:
         print("  every GND pad still reaches the pour")
         return 0, 0
-    print(f"  {len(orphans)} GND pad(s) cut off from the pour: " +
+    print(f"  {len(orphans)} GND pad(s) with a weak pour connection (<2 spokes): " +
           ", ".join(f"{p.ref}.{p.num}" for p in orphans))
     fixed = 0
     for p in orphans:
@@ -536,12 +584,21 @@ def stitch(grid, router, board, pad, main, gnd_id, reach=8.0):
     cx, cy = grid.to_cell(pad.x, pad.y)
     rc = int(reach / GRID)
     vr = int(math.ceil((board.via_d / 2 + ZONE_CLEAR + 0.1) / GRID))
+    # The via has to sit clear of the pad it is rescuing. Without this the pad's own
+    # cell could qualify as a target whenever the pour passed within a via's reach --
+    # A* then returned a single-cell "path", commit() emitted neither segment nor via,
+    # and stitch() reported success having done nothing at all. C_V1.2 stayed
+    # unconnected through three rounds of that.
+    keep = max(pad.w, pad.h) / 2 + board.via_d / 2 + 0.3
+    keep_c = keep / GRID
     targets = set()
     for li in range(2):
         y0, y1 = max(1, cy - rc), min(grid.H - 1, cy + rc)
         x0, x1 = max(1, cx - rc), min(grid.W - 1, cx + rc)
         for y in range(y0, y1):
             for x in range(x0, x1):
+                if (x - cx) ** 2 + (y - cy) ** 2 < keep_c * keep_c:
+                    continue
                 vo = grid.via_owner[:, y, x]
                 if not all(v == 0 or v == gnd_id for v in vo):
                     continue
@@ -556,6 +613,8 @@ def stitch(grid, router, board, pad, main, gnd_id, reach=8.0):
     path = router.astar(src, targets, gnd_id)
     if path is None:
         return False
+    if len(path) < 2:
+        return False       # degenerate: would add no copper (see the note above)
     el, ey, ex = path[-1]
     router.commit('GND', gnd_id, path)
     # A zone connects to a same-net track directly, so a via is only needed when
@@ -602,6 +661,9 @@ def emit(board, tracks, vias, out_path):
         cut + '\n' + '\n'.join(lines) + '\n)\n')
 
 
+FORCE_STITCH = set()
+
+
 def main(src, dst):
     t0 = time.time()
     b = Board(src)
@@ -627,7 +689,7 @@ def main(src, dst):
         if f:
             failed.append(net)
     print("\nchecking the GND pour:")
-    check_and_stitch(g, r, b)
+    check_and_stitch(g, r, b, force=FORCE_STITCH)
     length = sum(math.hypot(x2 - x1, y2 - y1)
                  for _, _, pts in r.tracks for (x1, y1), (x2, y2) in zip(pts, pts[1:]))
     print(f"\nconnections routed {tot_done}, failed {tot_fail}")
@@ -640,6 +702,10 @@ def main(src, dst):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 3:
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    for a in sys.argv[1:]:
+        if a.startswith('--force-stitch='):
+            FORCE_STITCH.update(x for x in a.split('=', 1)[1].split(',') if x)
+    if len(args) != 2:
         sys.exit(__doc__)
-    main(sys.argv[1], sys.argv[2])
+    main(args[0], args[1])
