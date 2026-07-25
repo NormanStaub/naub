@@ -125,12 +125,18 @@ def plot_gerbers(cli: str) -> None:
         "--subtract-soldermask",
         str(BOARD),
     )
+    # Separate PTH and NPTH files rather than one merged drill file. A merged
+    # file records plating only in `; #@!` comments, and a fab that ignores
+    # those plates every hole — which would plate the M2 mounting holes, the
+    # Kailh Choc alignment posts and the encoder bushing holes. Two files make
+    # the distinction structural instead of advisory.
     run_cli(
         cli, "pcb", "export", "drill",
         "--output", str(GERBER_DIR) + os.sep,
         "--format", "excellon",
         "--drill-origin", "absolute",
         "--excellon-units", "mm",
+        "--excellon-separate-th",
         "--generate-map", "--map-format", "gerberx2",
         str(BOARD),
     )
@@ -410,6 +416,11 @@ def write_order_doc(
     add("- The drill map (`*-drl_map.gbr`) is plotted into `export/gerbers/` for "
         "inspection but kept out of the upload zip, since JLC's parser can "
         "mistake it for a copper layer.")
+    add("- Plated and non-plated holes ship as two separate files "
+        "(`*-PTH.drl`, `*-NPTH.drl`). The 19 non-plated holes — M2 mounting, "
+        "Kailh Choc alignment posts, encoder bushings — must stay unplated, "
+        "and a merged drill file records that only in a comment some fabs "
+        "ignore.")
     add(f"- Zip contains {len(zip_members)} files: "
         + ", ".join(f"`{n}`" for n in zip_members) + ".")
     add("")
