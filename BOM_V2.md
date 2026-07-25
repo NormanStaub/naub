@@ -15,8 +15,8 @@
 | # | Component | V1 part | V2 part | Why |
 |---|-----------|---------|---------|-----|
 | 0 | **Controller** | Raspberry Pi Pico (V1 hand-wire; Pico 2 was the interim V2 plan) | **Waveshare RP2350-Tiny** + USB-C adapter board over 8-pin FPC (kit) | Pico 2 + its onboard USB jack don't fit the final layout; the Tiny splits USB onto a separate 18×18 mm **panel-mount** adapter. Same RP2350A silicon as the Pico 2 |
-| 1 | Rotary encoder | Bourns PEC11R-4220F-S0024 (24 detent, capped feel) | **Bourns PEC11L-4020F-S0020** (low profile, no detents) | Zero-detent smooth feel (grease-damped for weight) + **low-profile body** for a slimmer stack; supersedes the interim Alps EC11E1834403 pick |
-| 2 | Damping grease | — | **Nye Nyogel 767A** (silicone haptic damping grease) | Adds rotational friction/weight to the detentless shaft |
+| 1 | Rotary encoder | Bourns PEC11R-4220F-S0024 (24 detent, capped feel) | **Bourns PEC11L-4115F-S0020** (low profile, 20 detents, 15 mm shaft) | Detented click retained (1 detent = 1 count) + **low-profile body** and **short shaft** for a slimmer stack; supersedes the interim Alps EC11E1834403 pick |
+| 2 | ~~Damping grease~~ | — | ~~Nye Nyogel 767A~~ — **dropped** | Existed to add weight to a *detentless* shaft; with detent code `1` the click provides the feel and grease would only mush it |
 | 3 | **Display** | Waveshare 2.9" e-Paper (296×128, SSD1680, SPI) | **EA DOGM128W-6** — 128×64 amber **STN LCD** (FSTN positive, transflective, ST7565R, SPI) | Amber-backlit "classic" look; pixel-addressable; ~30–60 fps live volume bars vs e-paper's 1–2 fps |
 | 4 | **Display backlight** | — (e-paper needs none) | **EA LED55X46-A** (amber LED backlight, separate snap/solder board) | True ~605 nm amber via the backlight LED, not a filter; single-color = one backlight line |
 | 5 | Display mounting | PCB connector + cable (earlier V2 plan) | **Solder DOG directly to PCB** + ST7565 charge-pump caps at the pins | COG module is solder-in; charge-pump cap nets must be local to the chip (can't route over a cable) |
@@ -68,15 +68,15 @@ taps VSYS on the carrier (PCB_DESIGN §3, was VBUS).
 [PCB_DESIGN.md](PCB_DESIGN.md) — pin-map fix, VSYS rail note, hybrid
 castellation + solder-through-hole module footprint, netlist swap.
 
-### Encoder — Bourns PEC11L-4020F-S0020 (supersedes the Alps EC11E pick)
+### Encoder — Bourns PEC11L-4115F-S0020 (supersedes the Alps EC11E pick)
 
 | Spec | Value |
 |------|-------|
 | Type | Incremental mechanical rotary, 2-phase (A/B), 11 mm **low profile** |
-| Detents | **0 — no detents (smooth)** (detent variants: codes 1/2/3 in the P/N) |
-| Resolution | 20 PPR (P/N options: 9 / 15 / 20) |
+| Detents | **20 — detent code `1`** (see the detent/pulse table below) |
+| Resolution | 20 PPR — **1:1 with the detents (one count per click)** |
 | Push switch | Integrated SPST momentary (click-to-mute/select retained) |
-| Shaft | 6 mm flatted metal shaft, 20 mm (15 / 25 mm variants exist) |
+| Shaft | 6 mm flatted metal shaft, **15 mm** (20 / 25 mm variants exist) |
 | Bushing / mount | M7×0.75 threaded, nut + washer bundled |
 | Terminals | PC pins, through-hole (A/C/B row + S1/S2 row, tab slots) |
 | Contact rating | 10 mA @ 5 V DC |
@@ -96,16 +96,37 @@ notes were written against — **re-derive the panel-to-PCB gap** from the PEC11
 drawing before committing standoff heights (see PCB_NOTES checklist).
 
 **Knobs:** V1 3D-printed PETG knobs carry over, but cut the bore for this
-shaft (6 mm, flatted, 20 mm) — verify flat orientation/depth before printing.
+shaft (6 mm dia, flatted, **15 mm long**) — verify flat orientation/depth before
+printing. Note the shaft is **5 mm shorter than V1's** 20 mm PEC11R, so the knob
+sits lower; re-check knob height against the panel before printing a batch.
 
-### Damping grease — Nye Nyogel 767A
+#### Detent / pulse options (PEC11L "How to Order", detent digit)
 
-| Spec | Value |
-|------|-------|
-| Type | Synthetic hydrocarbon / silicone damping (haptic) grease |
-| Use | Pack a thin film into the encoder detent/bushing area to add drag |
-| Qty | 1 small tube/syringe (a few grams covers many encoders) |
-| Note | More grease = more drag; tune feel on a spare encoder first |
+| Detent code | Detents / rev | Pulses / rev | Counts per detent (`divisor = 4`) |
+|---|---|---|---|
+| 0 | none | 15 or 20 | n/a (continuous) |
+| **1 (chosen)** | **20** | **20** | **1 — one count per click** |
+| 2 | 30 | 15 | ½ — every other click is dead |
+| 3 | 18 | 9 | ½ — every other click is dead |
+
+**Why code `1` and not `2`.** Codes 2 and 3 put **two detents per quadrature
+cycle**. `rotaryio.IncrementalEncoder` defaults to `divisor = 4` (one count per
+full cycle), so those variants would emit one count per *two* clicks — half the
+detents do nothing. Recovering them needs `divisor = 2`, i.e. half-step decoding
+on a contacting encoder, which is the jitter-prone mode. Code `1` is 1:1 and
+needs **no firmware change at all** (`STEP = 2` still means 2 volume units per
+click; see [firmware/code.py](firmware/code.py) `STEP` / the `encs` list).
+
+**Resolution is unchanged at 20 PPR**, so the pull-up / RC analysis in
+[PCB_DESIGN.md](PCB_DESIGN.md) §2 stands as written — and detents cap achievable
+spin speed, so the edge-rounding headroom only improves.
+
+### ~~Damping grease — Nye Nyogel 767A~~ (dropped)
+
+**Dropped when the encoder moved to a detented variant.** The grease existed to
+give the *detentless* PEC11L-4020F-S0020 a weighted, damped feel. With 20 detents
+the click provides the tactile feedback, and packing damping grease into the
+detent area would only mute it. Do not order.
 
 ### Display — EA DOGM128W-6 amber STN LCD
 
@@ -187,9 +208,11 @@ schematic / LED55X46-A datasheet — not invented here.
 
 ## Design implications (firmware, no hardware change)
 
-- **No detents → no per-click step.** Quadrature decode is unchanged, but volume
-  will feel analog/continuous. Revisit volume-per-edge scaling so one full sweep
-  maps to a comfortable 0–100 range (18 PPR = 72 edges/rev vs V1's 24 PPR / 96).
+- **No firmware change required.** 20 detents / 20 pulses is 1:1, so the default
+  `rotaryio` `divisor = 4` yields one count per click, exactly as V1's 24/24
+  PEC11R did. `STEP = 2` still means 2 volume units per detent.
+- **Slightly coarser than V1:** 20 clicks/rev vs V1's 24, so a full 0–100 sweep
+  is 2.5 turns (was ~2.1). Bump `STEP` to 3 if that feels too slow.
 - Click-to-mute/select is unaffected (switch retained).
 
 ---
@@ -204,9 +227,10 @@ schematic / LED55X46-A datasheet — not invented here.
       regenerated netlist (42 parts / 48 nets). Still open in
       [PCB_DESIGN.md](PCB_DESIGN.md) §0: pre-fab 1:1 check of the SWD pad row,
       adapter mechanicals (enclosure CAD), firmware remap at V2 bring-up.
-- [ ] Grease selection confirmed (Nyogel 767A vs. heavier 767B) — buy a spare
-      encoder to dial in the feel before committing.
-- [ ] Knob redesign for the new shaft (bore + optional steel weight for inertia).
+- [x] ~~Grease selection (Nyogel 767A vs. heavier 767B)~~ — **moot**, dropped with
+      the move to a detented encoder (detent code `1`).
+- [ ] Knob redesign for the new shaft (6 mm flatted bore, **15 mm** — 5 mm shorter
+      than V1; optional steel weight for inertia).
 - [ ] Aux button force: confirm Red Pro 35 gf vs Pink 20 gf on a loose switch
       (soldered down = permanent, so decide before bulk order).
 - [ ] Extended printed Choc-stem cap for the aux buttons (+ enclosure clearance).
@@ -230,9 +254,11 @@ schematic / LED55X46-A datasheet — not invented here.
 - RP2350-Tiny 2D drawing (DXF, for the carrier footprint) — <https://files.waveshare.com/wiki/RP2350-Tiny/RP2350_Tiny_DXF.zip>
 - CircuitPython build for the RP2350-Tiny — <https://circuitpython.org/board/waveshare_rp2350_tiny/>
 - Bourns PEC11L series datasheet (REV. 04/26) — <https://www.bourns.com/docs/Product-Datasheets/PEC11L.pdf>
-- PEC11L-4020F-S0020 (Mouser) — <https://www.mouser.com/ProductDetail/Bourns/PEC11L-4020F-S0020>
+- PEC11L-4115F-S0020 (DigiKey) — <https://www.digikey.com/en/products/detail/bourns-inc/PEC11L-4115F-S0020/4699168>
+- PEC11L-4115F-S0020 (Mouser) — <https://www.mouser.com/ProductDetail/Bourns/PEC11L-4115F-S0020>
+- PEC11L-4220F-S0015 (Newark) — the 30-detent/15-pulse variant we rejected, listed
+  explicitly as "15 PPR, 30 Detents" — <https://www.newark.com/bourns/pec11l-4220f-s0015/incremental-encoder-15-pulses/dp/20T1492>
 - Alps EC11 series datasheet — <https://www.avnet.com/fsp/opasdata/d120001/medias/docus/196/Alps-Alpine-EC11-Series-EN-Datasheet.pdf>
-- Nye Nyogel 767A damping grease — <https://www.nyelubricants.com/nyogel-767a>
 - EA DOGM128W-6 (128×64 FSTN+ STN LCD, ST7565R) — <https://www.lcd-module.com/eng/pdf/grafik/dogm128e.pdf>
 - EA LED55X46-A amber backlight — <https://shop.lcd-module.com/>
 - EA DOGXL160W-7 (160×104, UC1610) higher-res option — <https://www.mouser.com/datasheet/3/711/1/dogxl160-7e.pdf>

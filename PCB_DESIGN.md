@@ -160,8 +160,10 @@ RP2350 internal pull-up ≈ **50–80 kΩ**. Using 50 kΩ:
 - **SW (100 nF):** ideal — 5 ms swamps switch bounce, press events are slow. Keep.
 - **A/B (10 nF): adequate but on the slow side.** With only the internal pull-up,
   τ ≈ 500 µs (up to ~800 µs at 80 kΩ). That's fine for hand-spin pulse periods (ms
-  range), but this is a **detentless 20-PPR** encoder (PEC11L) you may spin fast — the edges
-  get rounded. **It will work; flag for the prototype:** if you see missed/!jittery
+  range), but this is a **20-PPR** encoder (PEC11L) you may spin fast — the edges
+  get rounded. *(Since the encoder moved to the 20-detent `-4115F-S0020`, the
+  detents cap realistic spin speed, so this margin only improves — PPR is
+  unchanged at 20, so every figure in this section still holds.)* **It will work; flag for the prototype:** if you see missed/!jittery
   counts at speed, either drop A/B to **4.7 nF** (τ ≈ 250 µs) or add **10 kΩ external
   pull-ups** on A/B (τ ≈ 100 µs, the classic Bourns/Alps figure). I'd lay out the
   footprints to allow the 10 kΩ option (DNP by default) so it's a no-respin fix.

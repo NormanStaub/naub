@@ -102,11 +102,15 @@ def nmos_2n7002(ref=None):
 
 def encoder_pec11l(ref):
     # Bourns PEC11L (11mm LOW PROFILE): A / C(common) / B + switch S1 / S2.
-    # PEC11L-4020F-S0020 = no detents, 20 PPR, 20mm flatted shaft, push switch —
-    # keeps BOM_V2's zero-detent smooth-feel intent (ex-Alps EC11E1834403).
-    # Other shaft lengths: -4015F-/-4025F-; detented feel: detent codes 1/2/3.
+    # PEC11L-4115F-S0020 = detent code 1 (20 detents), 20 PPR, 15mm flatted shaft,
+    # push switch. Detents are 1:1 with pulses, so rotaryio's default divisor=4
+    # gives one count per click and the firmware needs no change.
+    # Do NOT substitute detent codes 2/3 (30/15 and 18/9) — those are 2 detents
+    # per quadrature cycle and would need divisor=2 half-step decoding.
+    # Other shaft lengths: -4120F-/-4125F- (20/25mm); 15mm is the shortest offered.
     # Footprint pads are lettered to match these pin numbers — no reconcile needed.
-    return Part(name="PEC11L", ref_prefix="SW", value="PEC11L-4020F-S0020", ref=ref, tool=SKIDL,
+    # Detent variant does not change the pinout or footprint.
+    return Part(name="PEC11L", ref_prefix="SW", value="PEC11L-4115F-S0020", ref=ref, tool=SKIDL,
                 footprint="naub:RotaryEncoder_Bourns_PEC11L-4xxxF-Sxxxx_Vertical",
                 pins=[Pin(num="A", name="A", func=PASSIVE),
                       Pin(num="C", name="C", func=PASSIVE),
