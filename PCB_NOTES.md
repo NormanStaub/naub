@@ -42,14 +42,21 @@
 - Strain-relieve the micro plug in the jack (glue/clip) so it can't vibrate out.
 
 ### Encoders (×4)
-- **Bourns PEC11L-4020F-S0020** (11 mm low profile, no detents), board-mounted
-  (PC pins to PCB). Supersedes the Alps EC11E1834403 pick — see BOM_V2.
+- **Bourns PEC11L-4215F-S0015** (11 mm low profile, **30 detents / 15 PPR**,
+  **15 mm shaft**), board-mounted (PC pins to PCB). Supersedes the Alps
+  EC11E1834403 pick and the earlier detentless -4020F-S0020 — see BOM_V2.
+  Detent code `2` is **2 detents per pulse** — the firmware compensates with
+  `divisor = 2`. Substituting any other detent code requires changing that line.
+  All PEC11L `-4xxxF-Sxxxx` share one body and pinout, so the footprint is
+  unaffected by detent/resolution choice.
 - **Nut-secured to the top panel** (M7×0.75 bushing + nut + washer, bundled).
   **Panel-to-PCB gap changes vs the old EC11E figure (≈6.5 mm)** — the PEC11L
   body is shallower (body depth ≈ 4.5 mm off the PCB per the datasheet side
   view); *re-derive the gap from the PEC11L drawing before fixing standoffs*.
-- **Knob:** no shortened cap needed — the long shaft already sits the knob above
-  the panel. **Trim the metal D-shaft** to set final knob height.
+- **Knob:** the 15 mm shaft is **5 mm shorter than V1's 20 mm** PEC11R, so the
+  knob sits correspondingly lower — re-check knob height against the panel before
+  printing a batch. **Trim the metal D-shaft** to set final knob height if needed
+  (note the D-flat runs from the tip down, so trimming shortens the flat too).
 - Debounce caps per encoder: **2× 10 nF (A/B) + 1× 100 nF (SW)**, placed right at
   the pins. Internal pull-ups (no discrete pull-ups).
 
@@ -154,7 +161,8 @@ off-module).
 ## Open items — component sourcing
 
 - [ ] **Switch Pico order from H → non-H** (no headers) for the flush mount.
-- [ ] **Grease grade:** Nyogel 767A vs heavier 767B.
+- [x] ~~**Grease grade:** Nyogel 767A vs heavier 767B.~~ — moot, dropped with the
+      move to a detented encoder (see BOM_V2).
 - [ ] **Aux button force:** confirm Red Pro 35 gf vs Pink 20 gf on a **loose
       switch** (soldered down = permanent, so decide before bulk order).
 - [ ] **Aux buttons:** buy **4 + spares**.
@@ -171,6 +179,9 @@ off-module).
 - [ ] **Mounting hardware:** M7 nuts/washers (often bundled w/ encoder — confirm),
       standoffs, panel screws.
 - [ ] **Confirm PEC11L datasheet dims** (body height, bushing length, shaft length)
-      for the final stack-up.
+      for the final stack-up. **Specifically unresolved:** whether the `15` shaft
+      code is measured from the mounting surface or from the top of the bushing —
+      this sets how much shaft is actually proud of the panel (~8 mm vs ~15 mm).
+      bourns.com blocks automated fetches; read the drawing by hand.
 - [ ] **PEC11L hand-solder caution:** Bourns specs wave soldering only ("hand
       soldering not recommended") — fine tip, short dwell when hand-building.
