@@ -1,0 +1,73 @@
+# naub V2 — JLCPCB assembly map.
+#
+# One row per footprint that appears in the KiCad position export (mounting
+# holes are already excluded at the board level, so they are not listed).
+#
+# Assemble = yes  -> goes into the JLC BOM + CPL, JLC solders it.
+# Assemble = no   -> left off both files; hand-soldered, or not a part at all.
+#
+# BoardValue is cross-checked against the .kicad_pcb on every export. If a
+# value changes in CAD, the export fails loudly instead of quietly ordering the
+# wrong part. Add a row here when a part is added to the board.
+#
+# The nine distinct LCSC numbers below were each verified against the LCSC
+# product page; all nine are JLCPCB *Basic* parts (no per-part setup fee).
+#
+Designator,Assemble,BoardValue,LCSC,Comment,Note
+C_BULK,yes,10uF,C15850,10uF 25V X5R 0805,Bulk input cap
+C_CP1,yes,1uF,C28323,1uF 50V X7R 0805,LCD charge pump
+C_CP2,yes,1uF,C28323,1uF 50V X7R 0805,LCD charge pump
+C_CP3,yes,1uF,C28323,1uF 50V X7R 0805,LCD charge pump
+C_DEC,yes,100nF,C14663,100nF 50V X7R 0603,Rail decoupling
+C_ENC1_A,yes,10nF,C57112,10nF 50V X7R 0603,Encoder 1 quadrature RC filter
+C_ENC1_B,yes,10nF,C57112,10nF 50V X7R 0603,Encoder 1 quadrature RC filter
+C_ENC1_SW,yes,100nF,C14663,100nF 50V X7R 0603,Encoder 1 switch debounce
+C_ENC2_A,yes,10nF,C57112,10nF 50V X7R 0603,Encoder 2 quadrature RC filter
+C_ENC2_B,yes,10nF,C57112,10nF 50V X7R 0603,Encoder 2 quadrature RC filter
+C_ENC2_SW,yes,100nF,C14663,100nF 50V X7R 0603,Encoder 2 switch debounce
+C_ENC3_A,yes,10nF,C57112,10nF 50V X7R 0603,Encoder 3 quadrature RC filter
+C_ENC3_B,yes,10nF,C57112,10nF 50V X7R 0603,Encoder 3 quadrature RC filter
+C_ENC3_SW,yes,100nF,C14663,100nF 50V X7R 0603,Encoder 3 switch debounce
+C_ENC4_A,yes,10nF,C57112,10nF 50V X7R 0603,Encoder 4 quadrature RC filter
+C_ENC4_B,yes,10nF,C57112,10nF 50V X7R 0603,Encoder 4 quadrature RC filter
+C_ENC4_SW,yes,100nF,C14663,100nF 50V X7R 0603,Encoder 4 switch debounce
+C_LCD_VDD,yes,100nF,C14663,100nF 50V X7R 0603,LCD supply decoupling
+C_V0,yes,1uF,C28323,1uF 50V X7R 0805,LCD contrast/booster rail
+C_V1,yes,1uF,C28323,1uF 50V X7R 0805,LCD contrast/booster rail
+C_V2,yes,1uF,C28323,1uF 50V X7R 0805,LCD contrast/booster rail
+C_V3,yes,1uF,C28323,1uF 50V X7R 0805,LCD contrast/booster rail
+C_V4,yes,1uF,C28323,1uF 50V X7R 0805,LCD contrast/booster rail
+C_VOUT,yes,1uF,C28323,1uF 50V X7R 0805,LCD charge pump output
+JP_3V3,yes,0R,C21189,0R 0603,Solder-jumper link (0R resistor)
+JP_BL,yes,0R,C21189,0R 0603,Backlight enable link (0R resistor)
+Q1,yes,2N7002,C8545,2N7002 N-MOSFET SOT-23,Backlight low-side switch
+R_BL1,yes,300,C23025,300R 1% 0603,Backlight LED ballast
+R_BL2,yes,300,C23025,300R 1% 0603,Backlight LED ballast
+R_BL3,yes,300,C23025,300R 1% 0603,Backlight LED ballast
+R_BL_G,yes,100,C22775,100R 1% 0603,Q1 gate series resistor
+R_BL_GS,yes,10k,C25804,10k 1% 0603,Q1 gate pulldown
+SW1,no,PEC11L-4020F-S0020,,,Hand-soldered — rotary encoder
+SW2,no,PEC11L-4020F-S0020,,,Hand-soldered — rotary encoder
+SW3,no,PEC11L-4020F-S0020,,,Hand-soldered — rotary encoder
+SW4,no,PEC11L-4020F-S0020,,,Hand-soldered — rotary encoder
+SW5,no,Kailh_Choc_Red,,,Hand-soldered — key switch
+SW6,no,Kailh_Choc_Red,,,Hand-soldered — key switch
+SW7,no,Kailh_Choc_Red,,,Hand-soldered — key switch
+SW8,no,Kailh_Choc_Red,,,Hand-soldered — key switch
+SW9,no,Kailh_Choc_Red,,,Hand-soldered — key switch
+U1,no,Waveshare_RP2350-Tiny,,,Hand-soldered — Waveshare RP2350-Tiny module
+U2,no,EA_DOGM128W-6,,,Hand-soldered — EA DOGM128W-6 display
+J1,no,SWD,,,Hand-soldered — through-hole SWD header
+J_ADC,no,SPARE_IO,,,Hand-soldered — through-hole spare-IO header
+J_LCD,no,LCD_DEBUG,,,Hand-soldered — through-hole LCD debug header
+TP_3V3,no,TP,,,Not a part — bare test pad
+TP_3V3L,no,TP,,,Not a part — bare test pad
+TP_BLK,no,TP,,,Not a part — bare test pad
+TP_BLPWM,no,TP,,,Not a part — bare test pad
+TP_GND1,no,TP,,,Not a part — bare test pad
+TP_GND2,no,TP,,,Not a part — bare test pad
+TP_GND3,no,TP,,,Not a part — bare test pad
+TP_V0,no,TP,,,Not a part — bare test pad
+TP_VOUT,no,TP,,,Not a part — bare test pad
+TP_VSYS,no,TP,,,Not a part — bare test pad
+REF**,no,naub_v2_layout,,,Not a part — mechanical layout outline footprint
