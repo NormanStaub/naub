@@ -12,3 +12,6 @@ skidl_REPL.*
 
 # Freerouting export/scratch (regenerate from the board)
 *.dsn
+
+# Fab output — regenerate with: python pcb/export_fab.py
+export/
