@@ -85,4 +85,9 @@
   (pad "SWDIO" thru_hole circle (at -2.54 -10.67) (size 1.6 1.6) (drill 1.0) (layers "*.Cu" "*.Mask"))
   (pad "GND" thru_hole circle (at 0.0 -10.67) (size 1.6 1.6) (drill 1.0) (layers "*.Cu" "*.Mask"))
   (pad "SWCLK" thru_hole circle (at 2.54 -10.67) (size 1.6 1.6) (drill 1.0) (layers "*.Cu" "*.Mask"))
+  (model "${KIPRJMOD}/naub.3dshapes/Waveshare_RP2350-Tiny.step"
+    (offset (xyz 0 0 0))
+    (scale (xyz 1 1 1))
+    (rotate (xyz 0 0 0))
+  )
 )

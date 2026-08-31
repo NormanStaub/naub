@@ -12,3 +12,11 @@ skidl_REPL.*
 
 # Freerouting export/scratch (regenerate from the board)
 *.dsn
+
+# Fab output — regenerate with: python pcb/export_fab.py
+# 3D output too (export/3d/) — regenerate with: python pcb/export_3d.py
+export/
+
+# Component 3D models — tens of MB of transformed vendor STEP, same policy as
+# CAD/ at the repo root. Regenerate with: python pcb/make_3d_models.py
+naub.3dshapes/

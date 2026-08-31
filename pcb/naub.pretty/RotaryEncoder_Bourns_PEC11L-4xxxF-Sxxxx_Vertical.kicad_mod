@@ -31,4 +31,9 @@
   (pad "S2" thru_hole circle (at 2.5 -7) (size 1.6 1.6) (drill 1.1) (layers "*.Cu" "*.Mask"))
   (pad "SH" thru_hole oval (at -6.4 0) (size 2.6 3.2) (drill oval 1.5 2.2) (layers "*.Cu" "*.Mask"))
   (pad "SH" thru_hole oval (at 6.4 0) (size 2.6 3.2) (drill oval 1.5 2.2) (layers "*.Cu" "*.Mask"))
+  (model "${KIPRJMOD}/naub.3dshapes/RotaryEncoder_Bourns_PEC11L-4020F-S0020.step"
+    (offset (xyz 0 0 0))
+    (scale (xyz 1 1 1))
+    (rotate (xyz 0 0 0))
+  )
 )
