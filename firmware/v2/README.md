@@ -42,6 +42,11 @@ host/     PC-side tools (Python 3 + Pillow, pyserial optional)
 
 Pins: A0=GP8 CS=GP9 SCL=GP10 SI=GP11 RST=GP12, backlight FET on GP13 (PWM).
 
+The white backlight is also the part that wears out: Display Visions rate the
+yellow/green, red and amber at 100,000 hours and say the white and blue are
+"considerably shorter", recommending they be dimmed or switched off whenever
+possible. The idle fade below is that recommendation, automated.
+
 The backlight dims itself (`device/idle.py`): full while you are using it,
 10% one minute after the last knob or key, off after five, fading between —
 1.2 s down, 0.1 s back up, because settling should be unhurried and waking
@@ -89,7 +94,22 @@ previews are pixel-exact (WYSIWYG workflow — always preview before flashing).
 | whole UI, EQ screen | 380 fps |
 | free RAM with mixer + switcher loaded (8 apps, 2 tiers) | 358 kB |
 
-**What actually limits the frame rate.** Not the panel. A full frame costs
+**The panel refreshes at ~77 Hz, and that is a hard cap.** The ST7565R scans
+the glass from its own RC oscillator (fOSC 20 kHz typ, 17-24 min/max) and at
+1/65 duty the liquid crystal frame rate is `fOSC / (4 * 65)` = **76.9 Hz typ,
+65-92 Hz over tolerance** (ST7565R datasheet Tables 19 and 23). It free-runs,
+unsynchronised to our writes, and cannot be changed — an external clock needs
+CL/CLS and the DOGM128 module does not bring them out. Everything above is a
+data-delivery rate: at 360 fps we rewrite the RAM ~4.7 times per displayed
+frame. Nothing faster than ~77 Hz can appear as a distinct frame, which is
+exactly the effect the FRC grayscale exploits.
+
+The practical consequence: the 16 ms UI tick (62.5 Hz) is already within a
+whisker of the ceiling. Shortening it buys at most ~20% more distinct frames
+before the glass, not the code, becomes the limit.
+
+**What limits the frame rate below that.** Not the panel interface. A full frame
+costs
 1.75 ms of the ~2.7 ms the UI spends on one, and the SPI clock could be
 doubled for another 0.6 ms — the redraws are the rest, and they run on a
 16 ms tick, so *what you see moving* updates at 62.5 Hz however fast the loop

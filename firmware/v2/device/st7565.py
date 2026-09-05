@@ -10,12 +10,24 @@ circuit.  Measured on the V2 board (RP2350-Tiny, CircuitPython 10.3.0):
   * partial span():           ~2240 updates/s at 8 MHz (16px sprite, 2 pages)
   * 8 MHz SPI verified clean on hardware; the ST7565R tolerates it fine.
 
-Faster is available and mostly unhelpful.  show_pages() measured 900 fps at
-16 MHz and 1175 at 32; holding CS low for a whole frame instead of framing each
-page adds another 10%.  But the panel is nowhere near the limit -- 1.75 ms out
-of a 5.5 ms frame -- and an STN LCD cannot resolve 60 Hz anyway, which is
-exactly why the FRC grayscale works.  The frame rate is set by what the UI
-redraws, not by this file.
+Faster is available and pointless.  show_pages() measured 900 fps at 16 MHz
+and 1175 at 32; holding CS low for a whole frame instead of framing each page
+adds another 10%.  None of it can reach the glass, because:
+
+THE PANEL REFRESHES AT ~77 Hz AND NOTHING HERE CHANGES THAT.  The ST7565R
+scans the LCD off its own RC oscillator -- fOSC = 20 kHz typ (17..24 min/max,
+datasheet Table 19) -- and at the 1/65 duty this glass uses, the liquid crystal
+frame rate is fOSC / (4 * 65): 76.9 Hz typ, 65..92 Hz across the part's
+tolerance (Table 23).  It is free-running, unsynchronised to our writes, and
+not adjustable: an external clock would need CL/CLS, which the DOGM128 module
+does not bring out.
+
+So the SPI rate is a data-delivery number, not a refresh rate.  At 360 fps we
+rewrite the RAM ~4.7 times per displayed frame and the scan shows whatever
+happens to be there when it passes.  Anything the UI does faster than ~77 Hz
+cannot be seen as a distinct frame -- which is also the mechanism the FRC
+grayscale rides on, since the liquid crystal then averages what it is shown.
+The useful frame rate is set by what the UI redraws, not by this file.
 
 Framebuffer format (see gfx.py): bytearray(128*8), index = page*128 + x,
 bit (1 << (y & 7)) with LSB = top row of the page.
