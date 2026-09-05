@@ -23,7 +23,10 @@
 #   BTN1 / BTN2 (the upper pair):  previous / next mode
 #   BTN3 / BTN4 / BTN5 (bottom row, left to right):
 #       |<<  >||  >>|  -- media transport, sent as USB HID so it works with no
-#       host software running at all (see device/media.py)
+#       host software running at all (see device/media.py).  NOT in EQ mode:
+#       there the leftmost key resets the EQ to a flat default instead, and
+#       the other two are unmapped -- a transport key is no use while your
+#       hands are on the EQ, and a reset is.
 #
 # Only APP CTRL is implemented; flipping to EQ / CUSTOM 1 / CUSTOM 2 moves the
 # mode bar's ticks and label, and those screens land later.  The switcher opens
@@ -69,6 +72,7 @@ md = media.Media()
 
 # BTN3/4/5 -- the bottom row of keyswitches, left to right.
 MEDIA = {2: media.PREV, 3: media.PLAY, 4: media.NEXT}
+EQ_RESET_BTN = 2          # ... and BTN3 again, but as the EQ reset in EQ mode
 
 mx = mixer.Mixer(ccfont.TINY)
 dr = drawer.Drawer(switcher_data.ICONS, switcher_data.APPS, ccfont.TINY)
@@ -267,6 +271,20 @@ def levels(now):
             for c in range(mixer.NCOL)]
 
 
+def eq_reset():
+    """Every band back to the default flat profile -- gains to 0 AND the
+    shapes back to LOW/MID/HIGH, since "flat" that left a band parked at some
+    frequency you no longer remember is not much of a reset."""
+    global eq_ys
+    for i, (k, f, q) in enumerate(EQ_INIT):
+        eq_cur.set(i, k, f, 0.0, q, True)
+        eq_scr.handles[i] = eq_cur.column_of(f)
+        eq_param[i] = P_GAIN
+    eq_ys = None
+    lk.send("eqflat")
+    print("eq reset to flat")
+
+
 def flip_mode(d):
     """Flip through the mode list.  The ticks wipe across to their new side and
     push the label along with them; bar_moving keeps stepping that until it
@@ -282,8 +300,12 @@ def flip_mode(d):
     elif was_eq:
         mx.render()
     # snapshot what is on screen now, then wipe to what the new mode draws
+    # The wipe follows the way you moved through the list: forward sweeps
+    # right to left, back sweeps left to right, so stepping back to APP CTRL
+    # visibly undoes the step that left it.
     tr.start(eq_scr.planes[0] if was_eq else mx.planes[0],
-             eq_scr.planes[0] if mx.mode == EQ_MODE else mx.planes[0])
+             eq_scr.planes[0] if mx.mode == EQ_MODE else mx.planes[0],
+             wipe.RIGHT_TO_LEFT if d > 0 else wipe.LEFT_TO_RIGHT)
     set_screen(tr_views)
 
 
@@ -479,10 +501,17 @@ while True:
             elif b == 1:
                 flip_mode(1)
                 bg_dirty = True
+            elif mx.mode == EQ_MODE:
+                # No transport here: the bottom-left key resets the EQ, and
+                # the other two are deliberately unmapped rather than doing
+                # something surprising with your hands on the EQ knobs.
+                if b == EQ_RESET_BTN:
+                    eq_reset()
+                    eq_dirty = True
             else:
                 md.tap(MEDIA[b])
                 lk.send("btn %d 1" % b)
-        elif (not down) and bwas[b] and b in MEDIA:
+        elif (not down) and bwas[b] and b in MEDIA and mx.mode != EQ_MODE:
             lk.send("btn %d 0" % b)
         bwas[b] = down
 

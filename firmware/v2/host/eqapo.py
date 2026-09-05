@@ -245,11 +245,18 @@ class ParametricEq:
         self._dirty = True
 
     def flat(self):
-        """Every band back to 0 dB.  They stay ON: a 0 dB filter is already a
-        no-op, and switching them off would make the next gain change do
-        nothing until something turned them back on."""
-        for b in self.bands:
+        """Back to the default flat profile: gains to 0 AND the shapes back to
+        DEFAULTS, matching what the device's reset key does, so the two cannot
+        end up disagreeing about what "flat" means.
+
+        Bands stay ON: a 0 dB filter is already a no-op, and switching them off
+        would make the next gain change do nothing until something turned them
+        back on -- which is exactly how the EQ came to be silently dead."""
+        for i, b in enumerate(self.bands):
+            if i < len(DEFAULTS):
+                b.kind, b.f0, b.q = DEFAULTS[i][0], DEFAULTS[i][1], DEFAULTS[i][2]
             b.db = 0.0
+            b.on = True
         self._dirty = True
 
     # ---- writing ---------------------------------------------------------
