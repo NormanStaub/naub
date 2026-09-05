@@ -480,6 +480,11 @@ Four pages is not much, and the layout is what buys the icons their size back �
   width *after* everything else, so it never breaks where the tall icon stands
   — the icon reads as standing on the line.
 
+- **The host never lists itself.** `sysmeter`'s loopback capture opens the
+  render endpoint, which registers the host process as an audio session — so
+  naub appeared in its own mixer as `PYTHON`, metering the system output it was
+  capturing. `appmeter` skips its own PID: a tool should not show up among the
+  things it controls.
 - **The counter is honest.** One marker per app with a *live audio session*
   (`appmeter.active()`), filled at the current selection. Nothing playing means
   no markers — the dropdown still opens (a dead gesture is worse than an empty

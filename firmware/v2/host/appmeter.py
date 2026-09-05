@@ -37,6 +37,7 @@ knob moves the meter linearly and predictably.
 TODO: this duplicates part of host/naub_host/audio_windows.py (the V1 host).
 Fold the meter interface back into that module when V2 gets its own daemon.
 """
+import os
 from ctypes import POINTER, c_float, c_uint32
 from ctypes.wintypes import DWORD
 
@@ -58,6 +59,9 @@ class IAudioMeterInformation(IUnknown):
         COMMETHOD([], HRESULT, 'QueryHardwareSupport',
                   (['out'], POINTER(DWORD), 'pdwHardwareSupportMask')),
     )
+
+
+_OWN_PID = os.getpid()
 
 
 class Session:
@@ -127,6 +131,16 @@ class AppMeters:
         for s in sessions:
             if s.Process is None:
                 continue
+            # Skip OUR OWN process.  sysmeter's loopback capture opens the
+            # render endpoint, which registers the host as an audio session --
+            # so naub showed up in its own mixer as "python", metering the
+            # system output it was capturing.  A tool should not appear among
+            # the things it controls.
+            try:
+                if s.ProcessId == _OWN_PID:
+                    continue
+            except Exception:
+                pass
             try:
                 if s._ctl.IsSystemSoundsSession() == 0:    # S_OK == is that one
                     continue
