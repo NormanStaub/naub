@@ -14,8 +14,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEVICE = os.path.normpath(os.path.join(HERE, '..', 'device'))
 DEMOS = os.path.normpath(os.path.join(HERE, '..', 'demos'))
 
-LIBS = ('gfx.py', 'ccfont.py', 'st7565.py', 'naubhw.py', 'carousel.py',
-        'mixer.py')
+# boot.py first: it only takes effect after a power cycle, and copying it is
+# harmless for the demos that do not use the data port.
+LIBS = ('boot.py', 'gfx.py', 'ccfont.py', 'st7565.py', 'naubhw.py', 'link.py',
+        'carousel.py', 'mixer.py')
 DEMO_MAP = {
     'ball':   ('demo_ball.py', ()),
     'gray':   ('demo_gray_modes.py', ('graybars.py', 'graygrad.py')),

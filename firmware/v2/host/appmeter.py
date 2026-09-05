@@ -162,6 +162,13 @@ class AppMeters:
         except Exception:
             return 0.0
 
+    def set_system_volume(self, f):
+        try:
+            AudioUtilities.GetSpeakers().EndpointVolume \
+                .SetMasterVolumeLevelScalar(max(0.0, min(1.0, f)), None)
+        except Exception:
+            pass
+
 
 if __name__ == '__main__':
     import time

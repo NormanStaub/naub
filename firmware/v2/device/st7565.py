@@ -19,12 +19,21 @@ class ST7565:
 
     def __init__(self, sck, mosi, a0, cs, rst,
                  baudrate=8_000_000, orient_180=True, contrast=31,
-                 col_offset=0):
+                 col_offset=None):
         """Pins are board.GPx objects.  orient_180 flips the panel for the
         naub case orientation.  contrast is the 0x81 register (0..63);
         31 was tuned on the fitted panel for 4-plane FRC grays.
-        col_offset shifts the RAM window (some 132-col clones need 4;
-        this panel needs 0)."""
+
+        col_offset shifts the RAM window, and DEPENDS ON THE ORIENTATION.  The
+        ST7565R has 132 columns of RAM but this panel wires only 128 of them,
+        as SEG4..SEG131.  With ADC reversed (0xA1, our non-flipped case) column
+        address 0 maps to SEG131, so the window starts at 0; with ADC normal
+        (0xA0, the flipped case) it maps to SEG0, so the window has to start at
+        4.  Getting this wrong shifts the image by 4px and shows 4 columns of
+        stale RAM at one edge -- invisible on screens with blank margins, plain
+        as day on one that draws edge to edge.  Leave as None to derive it."""
+        if col_offset is None:
+            col_offset = 4 if orient_180 else 0
         self._spi = busio.SPI(sck, MOSI=mosi)
         while not self._spi.try_lock():
             pass

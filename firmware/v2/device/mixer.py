@@ -4,16 +4,16 @@ and a dot level meter for what that app is playing.
     +------------------------------------+
     | ####----- | ######--- | ########## |  volume bar   (page 0)
     | CHROME    | MUSIC     | SPOTIFY    |  name, marquee (page 1)
-    | : : : : : | : : : : : |            |  8 bands per column, hanging from
-    | : : : : : | : :   : : |            |  the top and growing DOWN, each
-    | :   : :   | :     :   |            |  with its own peak marker riding
-    | -   - -   | -     -   |            |  its leading edge
+    | -   - -   | -     -   |            |  8 bands per column, standing on
+    | :   : :   | :     :   |            |  the floor and bouncing UP, each
+    | : : : : : | : :   : : |            |  with its own peak marker riding
+    | : : : : : | : : : : : |            |  its leading edge
     | PRESET 1  |||  SYS. ############   |  footer       (page 7)
     +------------------------------------+
 
-An upside-down mixer meter: eight bands per app fill from the top down, each
-with a short line at its leading edge -- the peak hold, which jumps straight to
-any new peak and then settles back smoothly when the signal drops.
+A mixer meter: eight bands per app rise from the bottom, each with a short line
+at its leading edge -- the peak hold, which jumps straight to any new peak and
+then settles back smoothly when the signal drops.
 
 Pure Python, no hardware imports, so host/preview_mixer.py renders exactly what
 the panel shows.
@@ -99,11 +99,14 @@ _RULE_ROW = bytes((RULE_MASK,)) * COLW    # clears a page AND lays the rule
 
 
 def _band_pages(h):
-    """A band filled h pixels from the top, as one byte mask per page.
-    Lit where (y & 3) < 2 -- 2px dot, 2px gap, so the texture survives."""
+    """A band standing h pixels tall from the BOTTOM, as one byte mask per page.
+
+    The 2px-on/2px-off dot texture is anchored to the bottom too, so the dots
+    stay put as the bar grows instead of crawling."""
     pages = bytearray(NPAGE)
-    for y in range(h):
-        if (y & 3) < 2:
+    for i in range(h):
+        if (i & 3) < 2:
+            y = METER_H - 1 - i
             pages[y >> 3] |= 1 << (y & 7)
     return bytes(pages)
 
@@ -238,11 +241,12 @@ class Mixer:
                                 scratch[x] |= m
                 p = peaks[b]
                 if p > 0.0:                          # this band's peak marker
-                    y = int(p * METER_H + 0.5) - 1
-                    if y < 0:
-                        y = 0
-                    elif y >= METER_H:
-                        y = METER_H - 1
+                    d = int(p * METER_H + 0.5)       # height above the floor
+                    if d < 1:
+                        d = 1
+                    elif d > METER_H:
+                        d = METER_H
+                    y = METER_H - d
                     o = (y >> 3) * COLW + bx + PEAK_DX
                     m = 1 << (y & 7)
                     lo = 0 if o < 0 else o
