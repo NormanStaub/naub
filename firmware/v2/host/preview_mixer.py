@@ -25,14 +25,17 @@ def demo_states():
     m.vol = [0.45, 0.70, 1.0]
     m.sysvol = 0.62
 
-    m.update([0.9, 0.65, 0.0])
+    random.seed(3)
+    for _ in range(30):                      # let the per-band wander settle in
+        m.update([0.85, 0.60, 0.0])
     m.render()
-    yield m, 'hit: meter and peak together'
+    yield m, 'playing: bands wander independently'
 
     for i in range(4):
-        m.update([0.15, 0.30, 0.0])          # signal drops; watch them separate
+        for _ in range(8):                   # signal drops; peaks hang behind
+            m.update([0.12, 0.25, 0.0])
         m.render()
-        yield m, 'decay %d: peak lags behind' % (i + 1)
+        yield m, 'decay %d: peaks lag the bands' % (i + 1)
 
     m.mute[1] = True
     m.set_name(1, 'SUPERNOTE_PARTNER')       # long -> marquee

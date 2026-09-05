@@ -16,7 +16,7 @@ import time
 import naubhw, ccfont, carousel, mixer, switcher_data
 
 HOLD = 0.6            # seconds held = mute rather than open the picker
-TICK_MS = 33          # meter update rate; fast enough to look like a meter
+TICK_MS = 16          # meter update rate; mixer.FALL/PEAK_FALL are tuned to it
 MARQ_MS = 140         # how often a too-long name scrolls one pixel
 
 disp = naubhw.display()
@@ -52,7 +52,7 @@ press_t = [0.0] * mixer.NCOL
 t_push = t_marq = time.monotonic()
 
 views = mx_views
-n_planes = len(views)
+n_planes = len(views)      # mixer is binary (1 plane); the carousel is FRC (4)
 print("naub V2 mixer | %d columns | turn=volume click=pick hold=mute | ENC4=system"
       % mixer.NCOL)
 
@@ -106,6 +106,8 @@ while True:
                 pos = target = float(col_app[c])
                 focus = -1
                 views = car_views
+                n_planes = len(views)
+                i = 0
                 car.render(pos)
             elif c == sel:                        # confirm the pick
                 col_app[c] = int(target)
@@ -113,6 +115,8 @@ while True:
                 mx.render()
                 mode = 0
                 views = mx_views
+                n_planes = len(views)
+                i = 0
                 print("assign col %d -> %s" % (c, switcher_data.APPS[col_app[c]]))
         was[c] = down
 

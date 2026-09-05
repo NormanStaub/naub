@@ -10,7 +10,7 @@ device/   modules that live on the CIRCUITPY drive (pure CircuitPython)
   naubhw.py    board wiring: display, backlight, 4 encoders, 9 switches
   gfx.py       1-bit page framebuffer + text/icon drawing (runs on PC too)
   carousel.py  app-switcher carousel widget (pure Python -> previews on PC)
-  mixer.py     the mixer screen: 3 columns, volume bars, dot level meters
+  mixer.py     the mixer screen: 3 columns, volume bars, 8-band dot meters
   ccfont.py    C&C Red Alert font (TINY h8 full ASCII, SML h16, BIG digits h27)
 demos/    ready-to-flash examples (each becomes code.py) + generated data
   demo_mixer.py       the mixer screen + carousel picker  <- the main UI
@@ -131,26 +131,42 @@ music sit low in the range, so `appmeter.levels()` applies a gentle curve
 
 ### The meter
 
-Each column is an **upside-down mixer meter**: the dot rows fill from the top
-downward with the level, and the thin continuous line at the leading edge is
-the **peak hold** — it jumps straight to any new peak and then settles back
-smoothly as the signal drops, so it detaches from the falling bar.
+Each column is an **upside-down mixer meter with 8 bands**. Every band hangs
+from the top, grows down with its share of the level, and carries a short line
+at its leading edge — the **peak hold**, which jumps straight to any new peak
+and then settles back smoothly, detaching from the falling band.
 
-Both use fast-attack / slow-release ballistics (`mixer.FALL`,
-`mixer.PEAK_FALL`), which is what makes a meter look alive rather than jittery;
-the peak falls about six times slower than the bar.
+- **Ballistics** are fast-attack / slow-release on both (`mixer.FALL`,
+  `mixer.PEAK_FALL`, tuned for a 16 ms tick); the peak falls ~6x slower than
+  the band. That asymmetry is what makes a meter look alive rather than jittery.
+- **Height is in pixels, not rows.** A band fills any of 0..40 px, so motion
+  moves at the finest step the panel has. The dot texture comes from the *fill
+  pattern* (2px lit, 2px clear) rather than from quantising the height.
+- **The spectrum is faked**, because the host can only report one amplitude per
+  app. Bands get a gentle tilt (`TILT`, lows louder) times a per-band random
+  walk that is *smoothed* rather than re-rolled each frame (`NOISE_KEEP`,
+  `NOISE_GAIN`) — so they drift and bounce independently instead of flickering
+  like static.
 
-The 11 possible fill levels are precomputed as page-aligned byte patterns
-(`LEVEL_PAGES`), so drawing a column is 5 slice copies plus the peak line
-rather than a loop over 80 dots. That is what affords a 30 Hz meter.
+Every band height is precomputed as page byte masks (`BAND_PAGES`), so drawing
+a band is a few ORs into a per-column scratch buffer that is slice-copied
+straight into the framebuffer. The scratch overwrites every byte of a column,
+so there is no clear pass, and the separators sit in the 1px gaps *between*
+columns where the hot path never touches them — chrome is drawn once.
 
-### Binary vs gray
+### Binary, and therefore single-plane
 
-**Bars and meter are drawn pure binary** — solid in every FRC plane or not at
-all. A large area at part duty visibly flickers, so the bar's range is shown by
-a 1px baseline instead of a gray track, and a muted bar becomes a hollow
-outline instead of a dimmer fill. Gray is kept only for the chrome (rules and
-column separators, at half duty).
+**This screen is drawn pure binary**: every element is fully inked or absent,
+because a part-duty area of any size visibly flickers. So the bar's range is a
+1px baseline rather than a gray track, and a muted bar is a hollow outline
+rather than a dimmer fill.
+
+Being binary means **one framebuffer suffices** (`Mixer(font, n=1)`, the
+default): nothing to cycle, so no FRC shimmer at all, and a quarter of the
+drawing work. Measured **391 fps — i.e. 391 Hz of real refresh**, against
+100 Hz of gray cycle when the same screen was drawn across 4 planes. Pass
+`n=4` if you reintroduce gray elements. The carousel still uses 4 planes, so
+`demo_mixer.py` re-reads `len(views)` whenever it switches screens.
 
 ### Why it is cheap to animate
 

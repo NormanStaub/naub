@@ -4,32 +4,39 @@ and a dot level meter for what that app is playing.
     +------------------------------------+
     | ####----- | ######--- | ########## |  volume bar   (page 0)
     | CHROME    | MUSIC     | SPOTIFY    |  name, marquee (page 1)
-    | o o o o o | o o o o o |            |  meter hangs from the top
-    | o o o o o | o o o o o |            |    |  and grows DOWN
-    | --------- | o o o o o |            |    v  with the level
-    |           | --------- |            |  peak marker at the leading edge
+    | : : : : : | : : : : : |            |  8 bands per column, hanging from
+    | : : : : : | : :   : : |            |  the top and growing DOWN, each
+    | :   : :   | :     :   |            |  with its own peak marker riding
+    | -   - -   | -     -   |            |  its leading edge
     | PRESET 1  |||  SYS. ############   |  footer       (page 7)
     +------------------------------------+
 
-An upside-down mixer meter: the dots fill from the top down, and the thin
-continuous line at the leading edge is the peak hold -- it jumps straight to
+An upside-down mixer meter: eight bands per app fill from the top down, each
+with a short line at its leading edge -- the peak hold, which jumps straight to
 any new peak and then settles back smoothly when the signal drops.
 
 Pure Python, no hardware imports, so host/preview_mixer.py renders exactly what
 the panel shows.
 
-Everything is built around the page grid, because that is what makes it cheap
-enough to animate under the FRC plane cycling:
+Everything is built around the page grid, because that is what makes a 60 Hz
+meter affordable in Python:
 
-  * the meter's 11 possible fill levels are precomputed as page-aligned byte
-    patterns (LEVEL_PAGES), so drawing a column is 5 slice copies plus the peak
-    line, not a loop over 80 dots;
+  * every possible band height is precomputed as page byte masks (BAND_PAGES),
+    so drawing a band is a handful of ORs into a per-column scratch buffer that
+    is then slice-copied straight into the framebuffer;
+  * the scratch overwrites every byte of a column, so there is no clear pass,
+    and the separators live in the 1px gaps BETWEEN columns where the hot path
+    never touches them -- chrome is drawn once, at construction;
   * names render once into a one-page gfx.text_strip() and the marquee is a
     byte-slice window into it, so scrolling a long name costs nothing.
 
-Bars and meter are drawn PURE BINARY -- solid in every FRC plane or not at all.
-A large area at part duty visibly flickers; gray is kept for the chrome only.
+This screen is drawn PURE BINARY: every element is fully inked or absent, and
+a part-duty area of any size visibly flickers.  Being binary also means one
+framebuffer suffices (n=1, the default) -- there is nothing to cycle, so no FRC
+shimmer at all and a quarter of the drawing work.
 """
+from random import random as _rand
+
 import gfx
 
 W = gfx.W
@@ -55,46 +62,64 @@ SPACING = 0                   # ccfont.TINY advances already carry side bearing;
                               # 1px more would push most app names into a marquee
 
 # ---- meter -----------------------------------------------------------------
-# 8 dots across a 42px column (2px dot, 5px pitch) and 10 rows down the 5-page
-# band (2px dot, 4px pitch -> exactly 2 rows per page, so a row never straddles
-# a page boundary).
-DOT_COLS = 8
-DOT_ROWS = 10
-DOTX = tuple(1 + i * 5 for i in range(DOT_COLS))
-ROW_MASK = tuple(0x03 if (r & 1) == 0 else 0x30 for r in range(DOT_ROWS))
-# the peak marker is the lower pixel of its row, drawn right across the column:
-# a continuous line against the dotted rows, so it reads as a marker not a row
-PEAK_MASK = tuple(0x02 if (r & 1) == 0 else 0x20 for r in range(DOT_ROWS))
+# Each app column is 8 bands across (2px wide, 5px pitch), and each band hangs
+# from the top of the 5-page band and grows DOWN.
+#
+# Height is in PIXELS, not dot rows: a band's fill is any of 0..40, so the
+# ballistics move at the finest step the panel has.  The dot texture comes from
+# the pattern (2px lit, 2px clear) rather than from quantising the height, so
+# the meter still reads as a dot matrix while moving smoothly.
+NBAND = 8
+BANDX = tuple(1 + i * 5 for i in range(NBAND))
+BAND_W = 2                    # px wide
+METER_H = NPAGE * 8           # 40 px of travel
+PEAK_W = 4                    # peak marker overhangs its band, so it reads as
+PEAK_DX = -1                  # a line rather than another dot
 
-# Meter ballistics, in fraction-of-the-gap per update.  Both rise instantly and
+# Meter ballistics, as fraction-of-the-gap per update.  Both rise instantly and
 # fall gradually -- that asymmetry is what makes a meter look alive.  The peak
-# marker falls much more slowly than the bar, so it detaches and settles.
-FALL = 0.34
-PEAK_FALL = 0.055
+# marker falls ~6x slower than the band, so it detaches and settles.  Tuned for
+# TICK_MS = 16 (~60 Hz); at half the rate, roughly double both.
+FALL = 0.18
+PEAK_FALL = 0.028
 
-_GRAY = (0, 2)                # chrome (rules, separators): half duty
-_ALL = (0, 1, 2, 3)
+# Faked spectrum.  The host can only tell us one amplitude per app, so the
+# shape across the bands is invented: a gentle tilt (lows louder, as most
+# material is) times a per-band random walk.  The walk is smoothed rather than
+# re-rolled each frame, so bands drift and bounce independently instead of
+# flickering like static.
+TILT = (1.0, 0.98, 0.95, 0.90, 0.84, 0.77, 0.68, 0.58)
+NOISE_KEEP = 0.82             # how much of last frame's wander is retained
+NOISE_GAIN = 0.55             # how far a band can stray from the tilt
+
+# Everything on this screen is binary -- fully inked or absent -- so a column's
+# pixels are built once into a scratch buffer and slice-copied into whatever
+# planes exist, which is what keeps the 60 Hz meter affordable.
+_RULE_ROW = bytes((RULE_MASK,)) * COLW    # clears a page AND lays the rule
 
 
-def _level_pages(n):
-    """The n-rows-lit meter, as one byte pattern per page of the band."""
-    pages = [bytearray(COLW) for _ in range(NPAGE)]
-    for r in range(n):
-        buf = pages[r >> 1]
-        m = ROW_MASK[r]
-        for dx in DOTX:
-            buf[dx] |= m
-            buf[dx + 1] |= m
-    return tuple(bytes(b) for b in pages)
+def _band_pages(h):
+    """A band filled h pixels from the top, as one byte mask per page.
+    Lit where (y & 3) < 2 -- 2px dot, 2px gap, so the texture survives."""
+    pages = bytearray(NPAGE)
+    for y in range(h):
+        if (y & 3) < 2:
+            pages[y >> 3] |= 1 << (y & 7)
+    return bytes(pages)
 
 
-LEVEL_PAGES = tuple(_level_pages(n) for n in range(DOT_ROWS + 1))
+BAND_PAGES = tuple(_band_pages(h) for h in range(METER_H + 1))
 
 
 class Mixer:
-    def __init__(self, font, n=4, preset='PRESET 1'):
+    def __init__(self, font, n=1, preset='PRESET 1'):
+        """n = number of FRC planes.  This screen is entirely binary, so ONE
+        plane is enough and is the default: nothing to cycle means no shimmer
+        at all, and a quarter of the drawing work.  Pass n=4 if you add gray
+        elements back."""
         self.font = font
         self.planes = [gfx.new() for _ in range(n)]
+        self._ink = tuple(range(n))
         self.preset = preset
         self.names = [''] * NCOL
         self._strip = [None] * NCOL      # (w, buf) from gfx.text_strip
@@ -103,20 +128,24 @@ class Mixer:
         self.vol = [0.0] * NCOL          # 0..1
         self.mute = [False] * NCOL
         self.sysvol = 0.0
-        self.level = [0.0] * NCOL        # what the meter shows now
-        self.peak = [0.0] * NCOL         # where the peak marker sits
+        self.level = [0.0] * NCOL        # the column's own level, smoothed
+        # per band: what it shows, where its peak marker sits, and its wander
+        self.band = [[0.0] * NBAND for _ in range(NCOL)]
+        self.bpeak = [[0.0] * NBAND for _ in range(NCOL)]
+        self._noise = [[0.0] * NBAND for _ in range(NCOL)]
         self._scratch = bytearray(NPAGE * COLW)
         self.chrome()
 
     # ---- static furniture (draw once) ------------------------------------
     def chrome(self):
-        """Rules and column separators.  Mid gray so the data stays dominant."""
-        for k in _GRAY:
+        """Rules and column separators.  The separators sit in the 1px gaps
+        BETWEEN the columns, so nothing in the hot path ever overwrites them
+        and they only need drawing once."""
+        for k in self._ink:
             fb = self.planes[k]
-            for p in (PAGE_NAME, DOT_P1):
-                o = p * W
-                for x in range(W):
-                    fb[o + x] |= RULE_MASK
+            o = PAGE_NAME * W
+            for x in range(W):
+                fb[o + x] |= RULE_MASK
             for sx in SEPX:
                 for p in range(PAGE_NAME, DOT_P1 + 1):
                     fb[p * W + sx] = 0xFF
@@ -129,17 +158,35 @@ class Mixer:
         self._step[i] = 1
 
     def update(self, levels):
-        """Feed one sample per column (0..1) and advance the ballistics."""
+        """Feed one amplitude per column (0..1); spread it across the bands and
+        advance every band's ballistics one step."""
         for c in range(NCOL):
             v = levels[c]
             if v < 0.0:
                 v = 0.0
             elif v > 1.0:
                 v = 1.0
-            lv = self.level[c]
-            self.level[c] = v if v >= lv else lv + (v - lv) * FALL
-            pk = self.peak[c]
-            self.peak[c] = v if v >= pk else pk + (v - pk) * PEAK_FALL
+            self.level[c] = v
+            bands = self.band[c]
+            peaks = self.bpeak[c]
+            noise = self._noise[c]
+            for b in range(NBAND):
+                n = noise[b] * NOISE_KEEP + (_rand() - 0.5) * NOISE_GAIN
+                if n < -0.9:
+                    n = -0.9
+                elif n > 0.9:
+                    n = 0.9
+                noise[b] = n
+                t = v * TILT[b] * (1.0 + n)
+                if t < 0.0:
+                    t = 0.0
+                elif t > 1.0:
+                    t = 1.0
+                x = bands[b]
+                x = t if t >= x else x + (t - x) * FALL
+                bands[b] = x
+                p = peaks[b]
+                peaks[b] = x if x >= p else p + (x - p) * PEAK_FALL
 
     def marquee(self):
         """Advance any name too wide for its column; -> True if one moved."""
@@ -162,48 +209,55 @@ class Mixer:
 
     # ---- draw ------------------------------------------------------------
     def draw_dots(self):
-        for k in _ALL:                               # clear the band
-            fb = self.planes[k]
-            for p in range(DOT_P0, DOT_P1 + 1):
-                fb[p * W:(p + 1) * W] = _ZERO
+        # No band clear and no chrome restore: the scratch fully overwrites
+        # every byte of a column, and the separators live outside the columns.
+        # The last page is cleared to the rule row, so the line above the
+        # footer comes for free.
         scratch = self._scratch
         mv = memoryview(scratch)
+        blank = _ZERO[:COLW]
+        last = NPAGE - 1
         for c in range(NCOL):
-            n = int(self.level[c] * DOT_ROWS + 0.5)
-            if n > DOT_ROWS:
-                n = DOT_ROWS
-            pages = LEVEL_PAGES[n]
-            for i in range(NPAGE):
-                scratch[i * COLW:(i + 1) * COLW] = pages[i]
-            pk = self.peak[c]
-            if pk > 0.0:                             # peak marker
-                r = int(pk * DOT_ROWS + 0.5) - 1
-                if r < 0:
-                    r = 0
-                elif r >= DOT_ROWS:
-                    r = DOT_ROWS - 1
-                base = (r >> 1) * COLW
-                m = PEAK_MASK[r]
-                for x in range(base, base + COLW):
-                    scratch[x] |= m
+            for i in range(last):                    # one column's worth
+                scratch[i * COLW:(i + 1) * COLW] = blank
+            scratch[last * COLW:] = _RULE_ROW
+            bands = self.band[c]
+            peaks = self.bpeak[c]
+            for b in range(NBAND):
+                h = int(bands[b] * METER_H + 0.5)
+                if h > METER_H:
+                    h = METER_H
+                bx = BANDX[b]
+                if h:
+                    pages = BAND_PAGES[h]
+                    for i in range(NPAGE):
+                        m = pages[i]
+                        if m:
+                            o = i * COLW + bx
+                            for x in range(o, o + BAND_W):
+                                scratch[x] |= m
+                p = peaks[b]
+                if p > 0.0:                          # this band's peak marker
+                    y = int(p * METER_H + 0.5) - 1
+                    if y < 0:
+                        y = 0
+                    elif y >= METER_H:
+                        y = METER_H - 1
+                    o = (y >> 3) * COLW + bx + PEAK_DX
+                    m = 1 << (y & 7)
+                    lo = 0 if o < 0 else o
+                    for x in range(lo, o + PEAK_W):
+                        scratch[x] |= m
             x0 = COLX[c]
             for i in range(NPAGE):
                 o = (DOT_P0 + i) * W + x0
                 src = mv[i * COLW:(i + 1) * COLW]
-                for k in _ALL:
+                for k in self._ink:
                     self.planes[k][o:o + COLW] = src
-        for k in _GRAY:                              # separators cross the band
-            fb = self.planes[k]
-            for sx in SEPX:
-                for p in range(DOT_P0, DOT_P1 + 1):
-                    fb[p * W + sx] = 0xFF
-            o = DOT_P1 * W
-            for x in range(W):
-                fb[o + x] |= RULE_MASK
 
     def draw_names(self):
         o = PAGE_NAME * W
-        for k in _ALL:
+        for k in self._ink:
             self.planes[k][o:o + W] = _ZERO
         for c in range(NCOL):
             st = self._strip[c]
@@ -221,9 +275,9 @@ class Mixer:
                 src = memoryview(buf)[s:s + avail]
                 n = avail
             a = o + x
-            for k in _ALL:
+            for k in self._ink:
                 self.planes[k][a:a + n] = src
-        for k in _GRAY:                              # restore the rule + seps
+        for k in self._ink:                               # restore the rule + seps
             fb = self.planes[k]
             for x in range(W):
                 fb[o + x] |= RULE_MASK
@@ -232,7 +286,7 @@ class Mixer:
 
     def draw_vol(self):
         o = PAGE_VOL * W
-        for k in _ALL:
+        for k in self._ink:
             self.planes[k][o:o + W] = _ZERO
         for c in range(NCOL):
             x0 = COLX[c]
@@ -241,7 +295,7 @@ class Mixer:
                 fill = COLW
             # muted -> hollow outline; live -> solid.  Binary either way.
             m = VOL_OUTLINE if self.mute[c] else VOL_MASK
-            for k in _ALL:
+            for k in self._ink:
                 fb = self.planes[k]
                 for x in range(x0, x0 + fill):
                     fb[o + x] |= m
@@ -250,20 +304,20 @@ class Mixer:
 
     def draw_foot(self):
         o = PAGE_FOOT * W
-        for k in _ALL:
+        for k in self._ink:
             self.planes[k][o:o + W] = _ZERO
         w, buf = gfx.text_strip(self.font, self.preset, SPACING)
         n = min(w, 60)
-        for k in _ALL:
+        for k in self._ink:
             self.planes[k][o:o + n] = memoryview(buf)[:n]
         sw, sbuf = gfx.text_strip(self.font, 'SYS.', SPACING)
         bar_w = 34
         sx = W - bar_w - 2 - sw
-        for k in _ALL:
+        for k in self._ink:
             self.planes[k][o + sx:o + sx + sw] = memoryview(sbuf)[:sw]
         bx = W - bar_w
         fill = int(self.sysvol * bar_w + 0.5)
-        for k in _ALL:
+        for k in self._ink:
             fb = self.planes[k]
             for x in range(bx, bx + fill):
                 fb[o + x] |= VOL_MASK
