@@ -235,9 +235,10 @@ ignored). Implemented in `firmware/v2/device/link.py` and
 |---|---|---|
 | `meter <v0> <v1> <v2>` | H→D | Live level for each of the three **columns**, 0–100, pushed continuously (50 Hz by default). Purely a display feed — it never affects audio and is never echoed. |
 | `apps <A,B,C>` | H→D | Every app with a **live audio session**, in the host's preference order — the app switcher's list, and what its counter counts. **Comma** separated, because process names can contain spaces. An empty list is legal and means nothing is playing. |
-| `ameter <v0> <v1> …` | H→D | One level per entry of the last `apps` list, 0–100, pushed at the same rate. The switcher meters whichever entry is under the scroll. |
-| `pick <ch> <APP>` | D→H | The user assigned `<APP>` to column `<ch>` from the switcher. The host **pins** that column: it stops reassigning it as the busiest sessions churn. |
-| `mode <idx>` | D→H | The mode bar was flipped (BTN1 back, BTN2 forward). `<idx>` indexes the device's mode list — `APP CTRL`, `EQ`, `CUSTOM 1`, `CUSTOM 2`. Informational: the device owns which mode it is in. |
+| `ameter <v0> <v1> …` | H→D | One level per entry of the last `apps` list, 0–100. Sent at the meter rate while the switcher is **open**, and at 5 Hz when it is shut — the device needs it either way, because this is what it times each app's playing against (see *What the device offers*, below). |
+| `pick <ch> <APP>` | D→H | The user assigned `<APP>` to column `<ch>` from the switcher. The host **pins** that column: it stops reassigning it as the busiest sessions churn, and it remembers the pin across restarts. **One app, one column** — if another column already holds `<APP>`, the two swap. |
+| `mode <idx>` | D→H | The mode bar was flipped (BTN1 back, BTN2 forward), **and on connect**. `<idx>` indexes the device's mode list — `APP CTRL`, `EQ`, `CUSTOM 1`, `CUSTOM 2`. Not merely informational any more: the host starts and stops the loopback capture with it, so a host that ignores it just does more work than it needs to. |
+| `wheel <0|1>` | D→H | The switcher opened or closed, and on connect. Lets the host meter the app list at a useful rate while it is being looked at and a lazy one when it is not. |
 | `eqcaps <n> <fmin> <fmax> <maxdb> <sr> <ok>` | H→D | On connect: how many bands the host offers, the frequency range, the gain full scale, the endpoint sample rate (the device needs it to draw a truthful curve), and whether the engine would actually be heard. **`ok=0` is not an error** — Equalizer APO is attached per endpoint, so it is entirely normal for it to be installed and yet inert on the current device. The device says so rather than pretending to EQ. |
 | `eqband <i> <kind> <f0> <db> <q> <on>` | H→D | One band's full state: `kind` is `PK`/`LSC`/`HSC`, `f0` in Hz, `db` gain, `q`, `on` as 0/1. Sent for every band on connect, and again whenever something changes the EQ on the PC. |
 | `eqp <i> <param> <value>` | D→H | One EQ parameter moved. `param` ∈ `gain freq q kind on`; `value` is a float (or the kind token). The host clamps, applies and echoes nothing back — same non-echo rule as `vol`. |
@@ -285,6 +286,41 @@ device, not to a session — symmetric with `level 3` / `vol 3`.
 **Who owns the column names.** The host, except where the device pinned one
 with `pick`. Without the pin, a hand-picked column would be overwritten the
 next time the most-active-sessions list changed.
+
+**A pin outlives everything.** It is stored on the host (`%LOCALAPPDATA%
+\naub\pins.json`) and pushed back on every connect, so a column keeps its app
+across a device reload — which happens on every deploy — across a bridge
+restart, and across the app itself being closed. A pinned app that is not
+running shows its column with nothing to control; relaunch it and the column
+picks it straight back up. It does **not** reappear in the switcher's list
+while it is gone: assigning something is a statement about that column, not a
+reason to keep offering a dead app.
+
+**One app, one column.** Assigning an app that another column already holds
+swaps the two, rather than showing it twice. Two columns driving one session's
+fader would fight, and whichever lost would look broken. The device does the
+swap on its own display the instant you confirm, and the host does the same to
+its pins; they agree because both follow the same rule, not because one waits
+for the other.
+
+### What the device offers, and what the host reports
+
+`apps` is a statement of fact from the host: these sessions are streaming right
+now. It is **not** the switcher's list. The device keeps that itself
+(`device/wheel.py`), on two rules:
+
+* an app must be audible for a few seconds **in one run** before it earns a
+  place — so a notification chime, which is one to three seconds and does not
+  come back, never appears as something you could assign a knob to;
+* once earned, the place is held for ten minutes after the app goes quiet — so
+  pausing a track, or closing the thing that was playing, does not take the
+  entry away before you have finished with it.
+
+This lives on the device on purpose. The host would have to keep the same
+timers and stream the same conclusions, and the host is somebody's PC doing
+other work; the panel has a whole core idle between frames. It is also why
+`ameter` keeps flowing at 5 Hz with the switcher shut: those are the samples the
+timers run on.
 
 ### Media transport is HID, not this protocol
 

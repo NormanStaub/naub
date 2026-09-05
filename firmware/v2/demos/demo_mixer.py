@@ -28,6 +28,14 @@
 #       the other two are unmapped -- a transport key is no use while your
 #       hands are on the EQ, and a reset is.
 #
+# The switcher's list is the device's own, not the host's (device/wheel.py).
+# The host says what is streaming right now; the panel decides what is worth
+# OFFERING -- an app has to play for a few seconds in one run before it earns a
+# place, so notification chimes never appear, and once it has earned one it
+# keeps it for ten minutes after it goes quiet.  Column assignments are a
+# separate thing entirely: those are held by the host, survive the app closing,
+# and come back when it relaunches.
+#
 # The backlight follows you: full while you are touching it, 10% after a
 # minute, off after five, fading between the three (device/idle.py).  Any knob
 # or key wakes it, and the wake also does whatever it was pressed for -- a mixer
@@ -44,7 +52,8 @@
 # Deploy: python host/deploy.py mixer
 import random
 import time
-import naubhw, ccfont, drawer, eqcurve, eqscreen, idle, link, media, mixer, wipe
+import naubhw, ccfont, drawer, eqcurve, eqscreen, idle, link, media, mixer
+import wheel, wipe
 import switcher_data
 
 HOLD = 0.6            # seconds held = mute rather than open the picker
@@ -112,6 +121,7 @@ EQ_RESET_BTN = 2          # ... and BTN3 again, but as the EQ reset in EQ mode
 
 mx = mixer.Mixer(ccfont.TINY)
 dr = drawer.Drawer(switcher_data.ICONS, switcher_data.APPS, ccfont.TINY)
+wh = wheel.Wheel()                                # what the switcher offers
 eq_scr = eqscreen.EqScreen(ccfont.TINY)
 eq_cur = eqcurve.Curve(nband=eqscreen.NBAND)
 mx_views = [disp.make_views(fb) for fb in mx.planes]
@@ -150,14 +160,11 @@ mx.render()
 
 lk = link.Link()
 live = False              # is a host currently feeding us levels?
-t_live = 0.0              # ... when the last one arrived
-if lk.ready:
-    lk.send(link.BANNER)
+t_live = 0                # ... when the last one arrived
 
 # only used when SIMULATE: a slow envelope per column plus jitter
 env = [0.65, 0.85, 0.0]
 host_lv = [0.0] * mixer.NCOL
-app_lv = [0.0] * len(dr.apps)          # one per entry in the switcher list
 
 mode = 0                 # 0 = mixer, 1 = switcher dropdown
 sel = 0                  # which column the dropdown is editing
@@ -168,6 +175,20 @@ target = 0.0
 focus = -1
 bg_dirty = True          # the mixer frame behind the panel changed
 bar_moving = False       # the mode ticks are mid-wipe
+
+
+def announce():
+    """Say who we are AND what we are showing.  A reconnect finds the panel
+    already in some mode with the drawer open or shut, and the host meters
+    differently for each -- it cannot infer either, so we tell it."""
+    if not lk.ready:
+        return
+    lk.send(link.BANNER)
+    lk.send("mode %d" % mx.mode)
+    lk.send("wheel %d" % (1 if mode == 1 else 0))
+
+
+announce()
 
 last = [e.position for e in encs]
 was = [False] * len(sws)
@@ -250,6 +271,26 @@ def set_screen(v):
     i = 0
 
 
+def sync_wheel():
+    """Push the wheel's list into the drawer, keeping the scroll where it is.
+    The list can change under an open drawer -- something stops playing, or a
+    held entry finally expires -- and the focus has to survive that."""
+    global pos, target, focus
+    wh.dirty = False
+    dr.set_apps(wh.names)
+    # A held entry is marked: it is still offered, but nothing is coming out
+    # of it, and that is worth being able to see from the console.
+    print("wheel: %s" % (', '.join((n + '*') if wh.held(n) else n
+                                   for n in wh.names) or '(none)'))
+    if mode == 1:
+        n = len(dr.apps) - 1.0
+        if target > n:
+            pos = target = n if n > 0 else 0.0
+        focus = int(target)
+        dr.set_focus(focus)
+        dr.draw_shelf(pos)
+
+
 def gap():
     """The name cell the dropdown hangs out of: blanked, rule and all, while
     the panel is out.  Once a pick is confirmed (rev_t back to 0) the new name
@@ -260,6 +301,7 @@ def gap():
 def open_drawer(c):
     global mode, sel, reveal, rev_t, pos, target, focus
     mode, sel = 1, c
+    lk.send("wheel 1")            # the host meters the list faster while it is up
     k = dr.index_of(mx.names[c])
     if k < 0:
         k = 0
@@ -274,6 +316,7 @@ def open_drawer(c):
 def close_drawer():
     global mode
     mode = 0
+    lk.send("wheel 0")
     mx.render()
     set_screen(screen_views())
 
@@ -419,18 +462,10 @@ while True:
             if not live:
                 live = True
                 print("host connected: live audio")
-        elif v == 'ameter':                       # one level per switcher entry
-            app_lv = [int(x) * 0.01 for x in t[1:]]
+        elif v == 'ameter':                       # one level per LIVE app
+            wh.feed([int(x) * 0.01 for x in t[1:]], now)
         elif v == 'apps':                         # apps with a live session
-            dr.set_apps(' '.join(t[1:]).split(','))
-            app_lv = [0.0] * len(dr.apps)
-            if mode == 1:
-                n = len(dr.apps) - 1.0
-                if target > n:
-                    pos = target = n if n > 0 else 0.0
-                focus = int(target)
-                dr.set_focus(focus)
-                dr.draw_shelf(pos)
+            wh.set_live([a for a in ' '.join(t[1:]).split(',') if a], now)
         elif v == 'label' and len(t) >= 2:
             mx.set_name(int(t[1]), ' '.join(t[2:]))
             mx.draw_names()
@@ -474,7 +509,7 @@ while True:
         elif v == 'ping':
             lk.send('pong')
         elif v == 'hello':
-            lk.send(link.BANNER)
+            announce()
 
     # ---- knobs ----
     for c in range(mixer.NCOL):
@@ -558,6 +593,16 @@ while True:
             elif c == sel and rev_t:              # confirm and slide back up
                 if dr.apps:                       # nothing playing = nothing
                     nm = dr.apps[int(target)]     # to assign, but still close
+                    # One app, one column.  Taking an app that another column
+                    # already holds SWAPS them rather than showing it twice --
+                    # two columns driving one fader would fight each other, and
+                    # the second one would look broken.  The host does the same
+                    # to its pins; this is so the panel is right immediately.
+                    prev = mx.names[c]
+                    for j in range(mixer.NCOL):
+                        if j != c and mx.names[j] == nm:
+                            mx.set_name(j, prev)
+                            print("swap col %d <- %s" % (j, prev or '(none)'))
                     mx.set_name(c, nm)
                     mx.draw_names()
                     lk.send("pick %d %s" % (c, nm))
@@ -618,8 +663,11 @@ while True:
             if bar_moving:
                 bar_moving = mx.step_foot()
                 bg_dirty = True
+            wh.tick(now)
+            if wh.dirty:
+                sync_wheel()
             if is_live(now):
-                v = app_lv[focus] if 0 <= focus < len(app_lv) else 0.0
+                v = wh.level(focus)
             elif SIMULATE:
                 v = min(1.0, 0.35 + 0.5 * random.random()
                         + (0.6 if random.random() < 0.06 else 0.0))
@@ -660,6 +708,9 @@ while True:
     else:
         if now - t_push >= TICK_NS:
             t_push = now
+            wh.tick(now)              # entries expire whether or not it is open
+            if wh.dirty:
+                sync_wheel()
             if bar_moving:
                 bar_moving = mx.step_foot()
             mx.update(levels(now))

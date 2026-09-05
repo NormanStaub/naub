@@ -22,7 +22,10 @@ Verbs used by the mixer screen (V1 verbs kept, `meter` added for V2):
            apps  <A,B,C>          apps with a live session; the app switcher's
                                   list, comma separated because process names
                                   can contain spaces  (V2)
-           ameter <v0> <v1> ...   one level per entry in that list  (V2)
+           ameter <v0> <v1> ...   one level per app in `apps`, in that order.
+                                  Fast while the switcher is open, 5 Hz
+                                  otherwise -- the device times how long each
+                                  app has played from these (V2)
            eqcaps <n> <fmin> <fmax> <maxdb> <sr> <ok>
                                   what the EQ engine offers, on connect; ok=0
                                   means writing filters would do nothing  (V2)
@@ -36,6 +39,8 @@ Verbs used by the mixer screen (V1 verbs kept, `meter` added for V2):
            eqp   <i> <param> <v>  an EQ parameter moved; param is one of
                                   gain freq q kind on  (V2)
            eqflat                 reset every band  (V2)
+           mode  <idx>            the mode bar was flipped, and on connect (V2)
+           wheel <0|1>            the switcher opened / closed  (V2)
 """
 import usb_cdc
 

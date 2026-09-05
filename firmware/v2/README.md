@@ -15,6 +15,7 @@ device/   modules that live on the CIRCUITPY drive (pure CircuitPython)
   drawer.py    the app switcher: a dropdown over the meters (pure Python too)
   media.py     transport keys over USB HID -- no library, no host software
   idle.py      backlight: full while in use, 10% after 1 min, off after 5
+  wheel.py     which apps the switcher offers, and for how long
   ccfont.py    C&C Red Alert font (TINY h8 full ASCII, SML h16, BIG digits h27)
 demos/    ready-to-flash examples (each becomes code.py) + generated data
   demo_mixer.py       the mixer screen + the app-switcher dropdown  <- the UI
@@ -127,6 +128,64 @@ And one consequence: the idle time has to be spent, not just slept through. The
 USB CDC receive ring holds ~200 bytes and the host's resync burst fills it, so
 the loop wakes every 2 ms to empty the port and parses the lines on the next
 frame. Backlog on connect went from 200 bytes to 25 in steady state.
+
+### What runs where
+
+The split is not "whatever is easiest": the host is somebody's PC doing other
+work, and the panel has a whole core idle between frames.
+
+| | where | why |
+|---|---|---|
+| WASAPI sessions, volume, mute, per-app peaks | host | only Windows has them |
+| Column assignments (pins) | host | must outlive a device reload, and every deploy is one |
+| **Which apps the switcher offers** | **device** | per-app timers at a few Hz — the host would have to keep the same state and stream its conclusions |
+| Meter ballistics, marquee, easing, FRC | device | pixels are the device's job |
+| EQ response curve | device | 3 biquads evaluated on a 128-column grid, redrawn per detent |
+| EQ filtering itself | host | Equalizer APO is the engine; the panel is its control surface |
+| System spectrum (FFT) | host | needs the audio; **only runs while the EQ screen is up** |
+
+Measured, streaming to a live panel (4 s samples, one app playing):
+
+| panel is showing | sends / 4 s | bytes/s |
+|---|---|---|
+| mixer, switcher shut | `meter` 126, `ameter` 19 | 457 |
+| mixer, switcher open | `meter` 126, `ameter` 126 | 728 |
+| EQ screen | + `smeter` 125 | 2341 |
+
+`ameter` drops to 5 Hz with the switcher shut because that is all the device
+needs to time how long each app has played — 85% fewer sends, and 85% fewer
+per-app peak polls on the PC, for no visible difference. The loopback capture
+starts and stops with the EQ screen: measured **62–79 ms to start**, inside the
+220 ms mode wipe, so the spectrum is there by the time the screen finishes
+sliding in.
+
+### The switcher's list is the device's, not the host's
+
+The host reports what is streaming. The device (`device/wheel.py`) decides what
+is worth **offering**:
+
+* an app must be audible for **4 s within one run** (a run being broken by 2 s
+  of silence) before it earns a place — a notification chime is one to three
+  seconds and does not come back, so it never qualifies;
+* once earned, the place is held for **10 minutes** after it goes quiet, so
+  pausing a track or closing the player does not take the entry away.
+
+Verified on the hardware — the console logs the list, `*` meaning held:
+
+```
+wheel: CHROME, PYTHON      1.4 s chime playing
+wheel: CHROME              ... and gone the moment it stops
+wheel: CHROME, PYTHON      9 s stream playing
+wheel: CHROME, PYTHON*     ... held after it stops
+```
+
+**Assignments are a separate thing.** A column pinned to an app keeps it when
+the app closes, when the board reloads and when the bridge restarts (the pins
+live in `%LOCALAPPDATA%\naub\pins.json`); relaunch the app and the column
+controls it again. It does not reappear in the wheel while it is gone. And one
+app can only be in one column: assigning an app another column is pinned to
+swaps the two, on both sides, because two columns driving one fader would
+fight.
 
 ### Never time anything with `time.monotonic()`
 

@@ -1,6 +1,14 @@
 """Drive the mixer screen from this PC's real audio.
 
     python naub_bridge.py [--port COMx] [--rate 50] [--wait S] [--seconds S]
+
+`--rate 50` is an upper bound, not a promise: MEASURED at 31.5 Hz, because
+Windows' default timer granularity is 15.6 ms and the loop's 2 ms sleep rounds
+up to it, so a 20 ms period takes two of them.  It is left alone deliberately.
+Reaching a true 50 Hz means timeBeginPeriod(1) and a loop spinning sixteen
+times as often, which is more load on the user's PC to feed a meter that is
+already smoothed by its own ballistics -- the opposite of the trade this file
+is trying to make.
     python naub_bridge.py --ports          # what serial ports are there?
     python naub_bridge.py --once           # don't reconnect; exit on unplug
 
@@ -18,6 +26,18 @@ Requires device/boot.py deployed and the board POWER CYCLED once, so the data
 port exists -- see that file.  Run `python naub_bridge.py --ports` to see what
 was found.
 
+Column assignments are OURS to keep.  The device is a display; it loses
+everything on a reload, and a reload happens on every deploy.  So the pins live
+in a file here (PIN_PATH) and are pushed back on every connect -- a column
+assigned to an app keeps that app when the board reboots, when this bridge
+restarts, and when the app itself is closed and later relaunched, at which
+point the column simply starts controlling it again.
+
+Which apps are OFFERED in the switcher is the device's business, not ours (see
+device/wheel.py): we say what is streaming, it decides what is worth showing
+and for how long.  That is deliberate -- the accounting is per-app timers at a
+few hertz, and this is the user's PC.
+
 Protocol (PROTOCOL.md; `meter` is the V2 addition):
 
     ->  label <ch> <text>     column name, ch 0-2
@@ -25,16 +45,24 @@ Protocol (PROTOCOL.md; `meter` is the V2 addition):
     ->  mute  <ch> <0|1>
     ->  meter <v0> <v1> <v2>  column levels, sent at --rate Hz
     ->  apps  <A,B,C>         every app with a live session (the switcher list)
-    ->  ameter <v0> <v1> ...  one level per app in that list, at --rate Hz
+    ->  ameter <v0> <v1> ...  one level per app in that list; fast while the
+                              switcher is open, 5 Hz otherwise
     ->  ping                  liveness probe; the device answers `pong`
     <-  vol   <ch> <0..100>   a knob moved
     <-  mute  <ch> <0|1>      a knob was held; ch 3 is the system knob's click
-    <-  pick  <ch> <APP>      the switcher assigned an app to a column
-    <-  mode  <idx>           the mode bar was flipped (BTN1/BTN2)
+    <-  pick  <ch> <APP>      the switcher assigned an app to a column.  One
+                              app, one column: if another column already holds
+                              it, the two SWAP
+    <-  mode  <idx>           the mode bar was flipped (BTN1/BTN2), and on
+                              connect -- the spectrum capture only runs while
+                              the screen that draws it is up
+    <-  wheel <0|1>           the switcher opened / closed
     <-  btn   <n> <0|1>       an aux key; BTN3-5 are media transport and are
                               ALSO sent as USB HID, which is what actually
                               moves the track -- this line is only telemetry
 """
+import json
+import os
 import re
 import sys
 import time
@@ -52,6 +80,39 @@ EQ_MODE = 1               # ... and demo_mixer.EQ_MODE
 VID_PID = '2E8A'
 RESCAN_S = 1.0            # how often to re-enumerate audio sessions
 RECONNECT_S = 1.0         # how often to look for the board after it vanishes
+AMETER_IDLE_S = 0.2       # switcher shut: the device only needs enough to time
+                          # how long each app has been playing (device/wheel.py)
+
+# Where the column assignments live.  Not in the repo and not next to the
+# script: this is user state, and it has to survive a git checkout.
+PIN_PATH = os.path.join(os.environ.get('LOCALAPPDATA')
+                        or os.path.expanduser('~'), 'naub', 'pins.json')
+
+
+def load_pins():
+    """Column assignments from the last session.  Any failure means no pins,
+    never a crash: this is a convenience file, and starting unpinned is a
+    perfectly good state."""
+    out = [None] * NCOL
+    try:
+        with open(PIN_PATH) as f:
+            got = json.load(f).get('pinned') or []
+    except Exception:
+        return out
+    for i in range(min(NCOL, len(got))):
+        out[i] = got[i] or None
+    return out
+
+
+def save_pins(pinned):
+    try:
+        d = os.path.dirname(PIN_PATH)
+        if not os.path.isdir(d):
+            os.makedirs(d)
+        with open(PIN_PATH, 'w') as f:
+            json.dump({'pinned': pinned}, f)
+    except Exception as e:
+        print('could not save column pins (%s)' % e)
 
 
 class Dropped(Exception):
@@ -116,19 +177,23 @@ class Bridge:
         self.src = appmeter.AppMeters()
         self.keys = []            # what each column shows
         self.apps = []            # every app with a live session
-        self.pinned = [None] * NCOL   # columns the device chose by hand
+        self.pinned = load_pins()     # columns the device chose by hand
+        self.wheel_open = False       # is the switcher up?  It meters faster
         self.vol = [None] * (NCOL + 1)
         self.muted = [None] * (NCOL + 1)   # ... + the system endpoint
         self.eq = eqapo.ParametricEq()
         # The EQ screen's meter is a REAL analysis of the system output, not an
         # invented shape: per-app spectrum does not exist, but the endpoint can
         # be captured.  Optional -- without it the screen just shows a floor.
+        # Started ON DEMAND -- see want_spectrum().  It is a 48 kHz capture
+        # thread on somebody's PC and only one screen ever looks at it.
         self.sys = sysmeter.SysMeter(nband=SBANDS)
-        self.sys_ok = self.sys.start()
-        if not self.sys_ok:
-            print('system spectrum unavailable: %s' % self.sys.error)
+        self.sys_ok = False
         self.mode = 0
         self._rx = b''
+        if any(self.pinned):
+            print('columns restored: %s'
+                  % ' | '.join(p or '-' for p in self.pinned))
 
     def send(self, s):
         try:
@@ -152,6 +217,26 @@ class Bridge:
             else:
                 out.append(auto.pop(0) if auto else '')
         return out
+
+    def want_spectrum(self, on):
+        """Run the loopback capture only while the EQ screen is up.
+
+        It is a thread reading 48 kHz audio and an open audio client on the
+        user's machine, and exactly one of four modes draws it.  Starting it
+        costs about as long as the mode wipe takes, so the screen has its
+        spectrum by the time it finishes sliding in."""
+        if on and not self.sys_ok:
+            t0 = time.monotonic()
+            self.sys_ok = self.sys.start()
+            if self.sys_ok:
+                print('  spectrum on (%s, %.0f ms)'
+                      % (self.sys.name, (time.monotonic() - t0) * 1000))
+            else:
+                print('  spectrum unavailable: %s' % self.sys.error)
+        elif not on and self.sys_ok:
+            self.sys.stop()
+            self.sys_ok = False
+            print('  spectrum off')
 
     def push_apps(self, force=False):
         """The switcher's list: everything making noise, in full.  Sent as one
@@ -216,13 +301,15 @@ class Bridge:
             self.eq.flat()
             print('  eq flat')
         elif t[0] == 'mode' and len(t) == 2:
-            # Track it so the spectrum is only streamed to the screen that
-            # draws it -- 21 numbers at 50 Hz is bandwidth worth not wasting.
+            # The spectrum is only captured, analysed and streamed for the one
+            # screen that draws it -- see want_spectrum().
             self.mode = int(t[1])
+            print('  mode -> %s' % t[1])
+            self.want_spectrum(self.mode == EQ_MODE)
+        elif t[0] == 'wheel' and len(t) == 2:
+            self.wheel_open = t[1] == '1'
         elif t[0] == 'pong':
             print('  pong')
-        elif t[0] == 'mode' and len(t) == 2:
-            print('  mode -> %s' % t[1])
         elif t[0] == 'btn' and len(t) == 3:
             if t[2] == '1':
                 print('  aux key %s' % t[1])
@@ -247,7 +334,26 @@ class Bridge:
             ch = int(t[1])
             key = ' '.join(t[2:]).lower()
             if 0 <= ch < NCOL:
+                # One app, one column.  Taking an app another column is
+                # PINNED to swaps the two rather than showing it twice: two
+                # columns driving one fader would fight, and whichever lost
+                # would look broken.  What this column had goes where the app
+                # came from, which is what "swap" means to the hand that did
+                # it.
+                #
+                # Only pinned collisions.  A column that merely happens to be
+                # showing the app on its own has nothing to swap -- pinning it
+                # here removes the app from the auto pool, so that column
+                # picks the next busiest by itself, and forcing OUR app onto it
+                # would be pinning a column the user never chose.
+                prev = self.pinned[ch] or (self.keys[ch]
+                                           if ch < len(self.keys) else '')
+                for j in range(NCOL):
+                    if j != ch and self.pinned[j] == key:
+                        self.pinned[j] = prev or None
+                        print('  column %d takes %s' % (j, prev or '(auto)'))
                 self.pinned[ch] = key
+                save_pins(self.pinned)
                 print('  column %d pinned to %s' % (ch, key))
                 self.push_names(force=True)
                 self.push_state()
@@ -303,6 +409,7 @@ class Bridge:
         period = 1.0 / self.rate
         t0 = time.monotonic()
         next_meter = t0
+        next_ameter = t0
         next_scan = t0 + RESCAN_S
         next_log = t0 + 1.0
         sent = 0
@@ -317,7 +424,12 @@ class Bridge:
                 lv = self.src.levels(self.keys)
                 self.send('meter %d %d %d' % tuple(
                     int(min(1.0, x) * 100 + 0.5) for x in lv))
-                if self.apps:      # the switcher meters whichever app it shows
+                # Full rate while the switcher is up, because its bar has
+                # ballistics; a fifth of a second otherwise, which is all the
+                # device needs to tell a track from a notification chime.
+                # This is a peak poll per app per send, so it is real work.
+                if self.apps and (self.wheel_open or now >= next_ameter):
+                    next_ameter = now + AMETER_IDLE_S
                     self.send('ameter %s' % ' '.join(
                         '%d' % int(min(1.0, x) * 100 + 0.5)
                         for x in self.src.levels(self.apps)))
@@ -344,7 +456,8 @@ class Bridge:
                         self.push_apps()
                         self.push_names()
                         self.push_state()
-                        self.sys.restart_if_dead()
+                        if self.sys_ok:
+                            self.sys.restart_if_dead()
                 except Dropped:
                     raise
                 except Exception as e:

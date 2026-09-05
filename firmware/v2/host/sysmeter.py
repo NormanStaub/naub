@@ -79,7 +79,14 @@ class SysMeter:
         return True
 
     def stop(self):
+        """Stop the capture and let go of the endpoint.  Joins, so a start()
+        straight afterwards cannot end up with two threads filling one buffer,
+        and clears _thread so restart_if_dead() knows this was deliberate."""
         self._run = False
+        th = self._thread
+        self._thread = None
+        if th is not None:
+            th.join(0.5)
 
     def restart_if_dead(self):
         """The capture is bound to one endpoint, so a device change kills the
