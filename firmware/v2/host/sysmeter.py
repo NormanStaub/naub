@@ -81,6 +81,22 @@ class SysMeter:
     def stop(self):
         self._run = False
 
+    def restart_if_dead(self):
+        """The capture is bound to one endpoint, so a device change kills the
+        thread.  Bring it back on the new default rather than silently
+        returning the last spectrum captured from a device that is gone."""
+        if not available or self._thread is None:
+            return False
+        if self._thread.is_alive():
+            return False
+        self._run = False
+        self._thread = None
+        old = self.name
+        if self.start():
+            print('system spectrum reopened on %s (was %s)' % (self.name, old))
+            return True
+        return False
+
     @property
     def error(self):
         return self._err

@@ -179,9 +179,13 @@ class ParametricEq:
             return True, ('attached to %s; current device unknown'
                           % ', '.join(sorted(attached)))
         for name, active in attached.items():
-            # endpoint names get truncated in places, so match generously
-            a, b = name.lower()[:20], cur.lower()[:20]
-            if a in b or b in a:
+            # The registry holds the DEVICE name ("High Definition Audio
+            # Device") while pycaw reports the ENDPOINT name ("Speakers (High
+            # Definition Audio Device)"), so one is embedded in the other at a
+            # non-zero offset.  Comparing truncated prefixes silently fails on
+            # exactly that case -- substring, both ways, full strings.
+            a, b = name.strip().lower(), cur.strip().lower()
+            if len(a) >= 6 and len(b) >= 6 and (a in b or b in a):
                 if active:
                     return True, 'active on %s' % cur
                 return False, '%s is attached but not present' % name

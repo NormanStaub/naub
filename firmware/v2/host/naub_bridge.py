@@ -336,10 +336,19 @@ class Bridge:
             self.eq.tick(now)
             if now >= next_scan:
                 next_scan = now + RESCAN_S
-                self.src.refresh()
-                self.push_apps()
-                self.push_names()
-                self.push_state()
+                # WASAPI can be mid-change here (see AppMeters.refresh); ride
+                # it out rather than dying, because the panel going dark is a
+                # far worse outcome than a second of stale levels.
+                try:
+                    if self.src.refresh():
+                        self.push_apps()
+                        self.push_names()
+                        self.push_state()
+                        self.sys.restart_if_dead()
+                except Dropped:
+                    raise
+                except Exception as e:
+                    print('audio rescan failed (%s); retrying' % e)
             time.sleep(0.002)
 
 

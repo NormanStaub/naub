@@ -62,21 +62,31 @@ Probed via the registry and the config directory:
 
 - **Equalizer APO 1.4**, installed at `C:\Program Files\EqualizerAPO`, config in
   `…\config`.
-- **But it is inert on the machine's current output**, and this is the single
-  most important thing measured. It is attached to exactly one real endpoint —
-  **BESTISAN SR01 Stereo**, a Bluetooth speaker whose `DeviceState` is
-  `NOTPRESENT` — while the actual default output, *Speakers (High Definition
-  Audio Device)*, has no Equalizer APO at all.
+- **It is now attached to the current output, and proven to work.** It began
+  attached only to *BESTISAN SR01 Stereo*, a Bluetooth speaker whose
+  `DeviceState` was `NOTPRESENT`, while the actual default output had no APO at
+  all — so writing filters did precisely nothing. Adding *Speakers (High
+  Definition Audio Device)* in the Configurator fixed it.
 
-  Verified end to end, not inferred: playing noise, capturing the endpoint
-  loopback, writing a −24 dB notch at 1 kHz and capturing again moved that band
-  by **+1.02 dB**, i.e. not at all. Checking "is Equalizer APO installed?"
-  would have said yes and been useless. `eqapo.status()` therefore checks
-  whether it is attached to the endpoint *currently in use*, and says which
-  device to add in the Configurator when it is not.
+  Both states were measured the same way rather than inferred: play noise,
+  capture the endpoint loopback, write a −24 dB notch at 1 kHz, capture again.
 
-  Until that is done, the EQ mode will correctly report itself inert rather
-  than pretending to work.
+  | | change at 1 kHz |
+  |---|---|
+  | before, APO on an absent device | **+1.02 dB** — nothing |
+  | after, APO on the current output | **−17.57 dB** |
+
+  So two things are settled that the documentation does not state outright:
+  **Equalizer APO reloads a written config without any restart**, and **the
+  WASAPI loopback tap sits after the APO** — which is what makes the EQ
+  screen's meter genuinely *post-EQ*, as intended, rather than merely post-mix.
+
+  `eqapo.status()` checks attachment against the endpoint *currently in use*,
+  not merely whether Equalizer APO is installed, and names the device to add
+  when it is not. (Matching those two names is fiddly: the registry holds the
+  device name, `pycaw` reports the endpoint name, and one is embedded in the
+  other at a non-zero offset — comparing truncated prefixes silently fails on
+  exactly that case.)
 - **`config.txt` is yours**: a 20-filter PEQ export (`Filter 1: ON PEQ Fc 22.0
   Hz …`, currently all 0.00 dB) plus an active `Include: pce_chnl.txt` holding
   your channel routing (`Copy: RF=-1*R`, …). naub must never own or rewrite

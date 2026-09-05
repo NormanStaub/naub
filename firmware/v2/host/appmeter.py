@@ -101,15 +101,30 @@ class Session:
 class AppMeters:
     def __init__(self, curve=0.45):
         self.curve = curve
+        self._fail = None
         self._by_key = {}
         self._seen = []          # keys that have ever rendered audio, in order
         self.refresh()
 
     def refresh(self):
         """Re-enumerate sessions.  Cheap enough for ~1 Hz; peaks are polled
-        from the cached objects and do not need this."""
+        from the cached objects and do not need this.
+
+        -> True if the list was rebuilt.  Returns False rather than raising
+        when WASAPI is mid-change: the default endpoint being torn down and
+        recreated (headphones plugged in, a Bluetooth speaker connecting, the
+        Equalizer APO configurator doing its work) makes every call on the old
+        device fail with COMError 'Access is denied' for a moment.  That is a
+        normal event, not a fault, so keep the previous session map and try
+        again next time."""
+        try:
+            sessions = AudioUtilities.GetAllSessions()
+        except (COMError, OSError) as e:
+            self._fail = '%s' % (e,)
+            return False
+        self._fail = None
         by_key = {}
-        for s in AudioUtilities.GetAllSessions():
+        for s in sessions:
             if s.Process is None:
                 continue
             try:
@@ -125,6 +140,7 @@ class AppMeters:
             if sess.active and sess.key not in self._seen:
                 self._seen.append(sess.key)
         self._by_key = by_key
+        return True
 
     def active(self):
         """Every app with a live audio session right now, longest-established
