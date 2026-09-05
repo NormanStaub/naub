@@ -51,6 +51,10 @@ def watch(port, seconds=5.0):
     txt = buf.decode('utf-8', 'replace')
     txt = re.sub(r'\x1b\][^\x1b]*\x1b\\', '', txt)          # OSC titles
     txt = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', txt)         # CSI
+    # The Windows console is cp1252 by default and serial line noise is not:
+    # printing a stray byte would raise UnicodeEncodeError and lose the whole
+    # capture, which is the one thing this function exists to show.
+    txt = txt.encode('ascii', 'replace').decode('ascii')
     print('----- console (%ss) -----' % seconds)
     print(txt.strip() or '(no output)')
     print('----- end -----')

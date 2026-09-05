@@ -4,9 +4,9 @@
     | ####----- | ######--- | ########## |  volume bars stay put   (page 0)
     |           |  MUSIC    |  SPOTIFY   |  the edited column goes blank,
     |-----------............-------------|  and so does its rule -- the gap
-    |        o o o O o o                 |  is what says which one you are
-    |   [i]    [ICON]    [i]             |  changing
-    |  SPOTIFY  .. .. .. .. ..     |     |
+    |             SPOTIFY                |  is what says which one you are
+    |   [ic]     [ ICON ]     [ic]       |  changing
+    | o o o O o  [ ICON ]     .. .. |    |
     |------------------------------------|
     |  APP CTRL |||        SYS. ######    |  mode bar stays put   (pages 6-7)
     +------------------------------------+
@@ -18,24 +18,24 @@ untouched, so the volume bars and the mode bar never move.
 While it slides, the leading edge carries a solid rule (see compose) -- without
 it the panel reads as content fading in rather than a surface coming down.
 
-Three moving parts, and they update at different rates, which is the whole
-reason the panel is built page by page:
+Four pages is not much, and the layout is what buys the icons their size back:
 
-  * the counter (panel page 0) -- one ring per app with live audio, filled at
-    the current selection.  Redrawn only when the selection or the app list
-    changes.
-  * the shelf (panel pages 1..2) -- the focused icon at 16 px flanked by its
-    neighbours at 8 px, all bottom-aligned so they zoom off a common floor.
-    Redrawn while scrolling.
-  * the bottom row (panel page 3) -- the selected app's name and a horizontal
-    level meter for what THAT app is playing, with the same rise-instantly /
-    settle-slowly ballistics as the mixer's bands and a peak tick riding the
-    leading edge.  Redrawn every tick.
+  * the name (panel page 0) gets the WHOLE WIDTH.  It is the selected app's
+    name, not a column heading, so nothing needs to share the row with it and
+    a long name has the full 128 px before it has to be trimmed.
+  * the shelf (panel pages 1..3) is TOP-aligned, not bottom-aligned: every tier
+    starts on the same page and the focused one simply reaches further down.
+    That is what lets the focus be 24 px while its neighbours are 16 px inside
+    a band that is only three pages tall.
+  * the counter and the level meter (panel page 3) FLANK the focused icon
+    rather than sitting under it -- markers to its left, level to its right, in
+    the very row the tall icon is using.  A row of their own would have cost
+    the shelf a third of its height.
 
 The icons are 4-plane FRC grayscale (host/gen_switcher.py), so the whole frame
 cycles four ways while the drawer is open.  Only the icons are part-duty: the
-bars, names, meter and footer are drawn into every plane, i.e. solid, so they
-do not shimmer.
+name, markers, level and mode bar are drawn into every plane, i.e. solid, so
+they do not shimmer.
 
 Pure Python, no hardware imports -- host/preview_drawer.py renders exactly what
 the panel shows.
@@ -53,34 +53,38 @@ N_PLANES = 4
 
 # Panel-local y runs 0..31 (screen y = panel y + PANEL_P0 * 8).
 
-# ---- the scroll counter (panel page 0) ------------------------------------
-# 5x5 rings, one per app with a live audio session, the current one filled.
-# Column masks for panel y1..y5, so the row sits clear of both page edges.
-RING = (0x1C, 0x22, 0x22, 0x22, 0x1C)
-DISC = (0x1C, 0x3E, 0x3E, 0x3E, 0x1C)
-CNT_PITCH = 7                 # 5 px ring + 2 px gap
-CNT_MAX = 17                  # more than fits; the rest are simply not drawn
+# ---- the selected app's name (panel page 0) --------------------------------
+NAME_P = 0
+NAME_MAXW = W - 6             # the whole width, less a margin either side
 
-# ---- the icon shelf (panel pages 1..2) ------------------------------------
-# (size, panel page0).  Both tiers bottom-align on panel y23 and both sizes are
-# multiples of 8, so a blit is a byte-slice copy with no shifting.  The two
-# pages are all the taller mode bar leaves; the zoom is carried by the 2:1 size
-# ratio rather than by absolute size.
-TIERS = ((16, 1), (8, 2))
-SHELF_P0, SHELF_P1 = 1, 2
-PITCH = 28                    # px between neighbouring slots
+# ---- the icon shelf (panel pages 1..3) ------------------------------------
+# (size, panel page0).  Both tiers start on panel page 1 -- TOP-aligned, so the
+# focused icon grows downward into the counter row instead of needing a taller
+# band.  Both sizes are multiples of 8, so a blit is a byte-slice copy.
+TIERS = ((24, 1), (16, 1))
+SHELF_P0, SHELF_P1 = 1, 3
+PITCH = 42                    # px between neighbouring slots: exactly 3 visible
 CX = 64                       # the focused slot's centre
-NEAR = 0.5                    # |distance| under this = the big tier
+NEAR = 0.30                   # |distance| under this = the big tier.  Kept
+                              # tight so the 24px icon never reaches the
+                              # counter or the level meter beside it.
 
-# ---- the bottom row (panel page 3) ----------------------------------------
+# ---- counter + level, sharing panel page 3 with the tall icon --------------
 ROW_P = 3
-NAME_X = 1
-NAME_MAXW = 46                # names longer than this are trimmed with '..'
-BAR_GAP = 5                   # px between the name and the bar
-BAR_MASK = 0x0C               # panel y26..27: the 2px-tall dot row
-PEAK_MASK = 0x3E              # panel y25..29: the peak tick, taller than the bar
-BAR_END = W - 2
-WIPE = 0xFF                   # the solid row that rides the sliding edge
+CNT_X = 1                     # scroll counter: one marker per app, to the LEFT
+CNT_END = 38                  # ... of the focused icon
+LVL_X = 90                    # level meter, to its RIGHT
+LVL_END = W - 2
+
+RING = (0x1C, 0x22, 0x22, 0x22, 0x1C)     # 5px hollow marker, panel y26..y30
+DISC = (0x1C, 0x3E, 0x3E, 0x3E, 0x1C)     # ... filled: the current selection
+RING_W, RING_PITCH = 5, 7
+SMALL = (0x1C, 0x14, 0x1C)                # 3px, for when 5px will not fit
+SDISC = (0x1C, 0x1C, 0x1C)
+SMALL_W, SMALL_PITCH = 3, 4
+
+BAR_MASK = 0x18               # panel y27..28: the 2px-tall dot row
+PEAK_MASK = 0x3E              # panel y26..30: the peak tick, taller than the bar
 
 # Same ballistics as the mixer's bands (tuned for a ~16 ms tick): jump to any
 # new peak, settle back smoothly, and let the peak tick fall ~6x slower so it
@@ -124,9 +128,9 @@ def _bpx(b, size, x, y):
 
 def _placeholder(size, font=None, ch=''):
     """A block for an app we have no icon for: a rounded frame, plus its
-    initial when the tier is big enough to read one.  The audio session list
-    and the icon catalogue are gathered separately (apps making noise vs. apps
-    with a window), so a mismatch is normal and should look deliberate."""
+    initial.  The audio session list and the icon catalogue are gathered
+    separately (apps making noise vs. apps with a window), so a mismatch is
+    normal and should look deliberate."""
     b = bytearray((size >> 3) * size)
     e = size - 1
     for x in range(2, e - 1):
@@ -155,8 +159,7 @@ def _placeholder(size, font=None, ch=''):
 class Drawer:
     def __init__(self, icons, catalog, font, n=N_PLANES):
         """icons[app][tier][plane] and catalog[app] come from switcher_data.py;
-        `font` (ccfont.TINY) draws the bottom-row name and the initial on a
-        placeholder icon -- it is the only face that fits inside a 16 px box."""
+        `font` (ccfont.TINY) draws the name and the initial on a placeholder."""
         self.icons = icons
         self.catalog = tuple(c.upper() for c in catalog)
         self.font = font
@@ -166,7 +169,7 @@ class Drawer:
         # memoryviews built once, for both the icon blocks and the panel's own
         # pages.  A bytearray slice on the RIGHT of an assignment allocates a
         # copy: composing through raw slices measured 4.6 ms a frame against
-        # 0.6 ms through views, and the allocation means GC, i.e. flicker.
+        # 0.41 ms through views, and the allocation means GC, which is flicker.
         self.mv = [[[memoryview(b) for b in tier] for tier in app]
                    for app in icons]
         self.pmv = [memoryview(pan) for pan in self.panel]
@@ -188,9 +191,9 @@ class Drawer:
         number of things making noise, not the number we have art for.
 
         An EMPTY list is legal and means exactly what it looks like: nothing is
-        playing, so there are no rings and no icons.  The dropdown still opens
-        (a dead gesture is worse than an empty shelf), it just has nothing to
-        assign."""
+        playing, so there are no markers and no icons.  The dropdown still
+        opens (a dead gesture is worse than an empty shelf), it just has
+        nothing to assign."""
         self.apps = tuple(n for n in names if n)
         self.cat = tuple(self.catalog.index(a.upper())
                          if a.upper() in self.catalog else -1
@@ -217,15 +220,15 @@ class Drawer:
         if b is None:
             # cached as a memoryview for the same reason the icons are: _blit
             # slices its source every frame, and slicing bytes allocates.
-            # The 8 px tier is too small for a letter -- a bare frame there.
-            b = memoryview(_placeholder(
-                size, self.font if size >= 16 else None, key[1]))
+            b = memoryview(_placeholder(size, self.font, key[1]))
             self._ph[key] = b
         return b
 
     # ---- the animated part ------------------------------------------------
     def draw_shelf(self, pos):
-        """Icons with the focus at fractional index `pos`."""
+        """Icons with the focus at fractional index `pos`.  Redraws the counter
+        and the level afterwards: the focused icon reaches into their page, so
+        they have to be laid back over it."""
         for pan in self.panel:
             for p in range(SHELF_P0, SHELF_P1 + 1):
                 pan[p * W:(p + 1) * W] = _ZERO
@@ -245,10 +248,12 @@ class Drawer:
                 for k in range(self.n):
                     _blit(self.panel[k], self._icon(i, t, k), size, p0, x)
             i += 1
+        self.draw_counter()
+        self.draw_level()
 
     def update(self, level):
-        """One amplitude (0..1) for the app under the focus; advance the
-        bottom row's ballistics one step."""
+        """One amplitude (0..1) for the app under the focus; advance the level
+        meter's ballistics one step."""
         if level < 0.0:
             level = 0.0
         elif level > 1.0:
@@ -265,55 +270,81 @@ class Drawer:
         nm = self.apps[idx] if 0 <= idx < len(self.apps) else ''
         self._name = gfx.text_strip(self.font, fit(self.font, nm), 0) \
             if nm else None
+        self.draw_name()
         self.draw_counter()
-        self.draw_row()
 
-    def draw_counter(self):
+    def draw_name(self):
+        """The selected app, centred across the full width."""
         pan = self.panel[0]
-        pan[0:W] = _ZERO
-        n = len(self.apps)
-        if n > CNT_MAX:
-            n = CNT_MAX
-        x0 = (W - (n * CNT_PITCH - 2)) >> 1
-        if x0 < 0:
-            x0 = 0
-        for i in range(n):
-            m = DISC if i == self.idx else RING
-            x = x0 + i * CNT_PITCH
-            for j in range(5):
-                if 0 <= x + j < W:
-                    pan[x + j] |= m[j]
-        self._mirror(0, 1)
-
-    def draw_row(self):
-        """Name at the left, then a dot bar for that app's level with a peak
-        tick on its leading edge."""
-        pan = self.panel[0]
-        o = ROW_P * W
+        o = NAME_P * W
         pan[o:o + W] = _ZERO
-        x = NAME_X
         if self._name is not None:
             w, buf = self._name
+            x = (W - w) >> 1
             for j in range(w):
                 pan[o + x + j] |= buf[j]
-            x += w
-        start = x + BAR_GAP
-        avail = BAR_END - start
-        if avail > 0:
-            fill = int(self.lvl * avail + 0.5)
-            if fill > avail:
-                fill = avail
-            for i in range(fill):
-                if (i & 3) < 2:                  # 2 px on, 2 px off
-                    pan[o + start + i] |= BAR_MASK
-            if self.pk > 0.0:
-                d = int(self.pk * avail + 0.5)
-                if d < 1:
-                    d = 1
-                elif d > avail:
-                    d = avail
-                pan[o + start + d - 1] |= PEAK_MASK
-        self._mirror(ROW_P, ROW_P + 1)
+        self._mirror(NAME_P, NAME_P + 1)
+
+    def draw_counter(self):
+        """One marker per app with a live session, filled at the selection,
+        sitting to the LEFT of the focused icon."""
+        pan = self.panel[0]
+        o = ROW_P * W
+        for x in range(o + CNT_X, o + CNT_END):
+            pan[x] = 0
+        n = len(self.apps)
+        if n:
+            avail = CNT_END - CNT_X
+            # 5px rings while they fit; 3px markers when there are more apps
+            # than that -- the count still has to be readable at a glance.
+            if n * RING_PITCH - (RING_PITCH - RING_W) <= avail:
+                ring, disc, wide, pitch = RING, DISC, RING_W, RING_PITCH
+            else:
+                ring, disc, wide, pitch = SMALL, SDISC, SMALL_W, SMALL_PITCH
+            room = (avail + pitch - wide) // pitch
+            if n > room:
+                n = room
+            for i in range(n):
+                m = disc if i == self.idx else ring
+                x = CNT_X + i * pitch
+                for j in range(wide):
+                    if x + j < CNT_END:
+                        pan[o + x + j] |= m[j]
+        self._mirror_row()
+
+    def draw_level(self):
+        """The selected app's level: a short dot bar with a peak tick on its
+        leading edge, to the RIGHT of the focused icon."""
+        pan = self.panel[0]
+        o = ROW_P * W
+        for x in range(o + LVL_X, o + W):
+            pan[x] = 0
+        avail = LVL_END - LVL_X
+        fill = int(self.lvl * avail + 0.5)
+        if fill > avail:
+            fill = avail
+        for i in range(fill):
+            if (i & 3) < 2:                      # 2 px on, 2 px off
+                pan[o + LVL_X + i] |= BAR_MASK
+        if self.pk > 0.0:
+            d = int(self.pk * avail + 0.5)
+            if d < 1:
+                d = 1
+            elif d > avail:
+                d = avail
+            pan[o + LVL_X + d - 1] |= PEAK_MASK
+        self._mirror_row()
+
+    draw_row = draw_level        # the level is what moves every tick
+
+    def _mirror_row(self):
+        """Only the two ends of the row are solid chrome; the middle belongs to
+        the focused icon, which is per-plane FRC and must not be flattened."""
+        o = ROW_P * W
+        src = self.pmv[0]
+        for pan in self.panel[1:]:
+            pan[o + CNT_X:o + CNT_END] = src[o + CNT_X:o + CNT_END]
+            pan[o + LVL_X:o + W] = src[o + LVL_X:o + W]
 
     def _mirror(self, p0, p1):
         """Solid chrome is identical in every FRC plane, so draw it once."""

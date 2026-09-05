@@ -29,6 +29,16 @@ wide as the longest mode name, so advancing a mode moves exactly two things --
 one tick hops from the right lattice to the left one, and the label's leading
 edge steps right by exactly the space that tick now occupies.
 
+That hop is ANIMATED, and the animation falls out of the geometry rather than
+being bolted on.  Every tick j has exactly two homes -- LEFT_j and RIGHT_j, one
+per side of the label -- and is at LEFT_j precisely when j is behind the current
+mode.  So give each tick a crossed-ness from 0 (right) to 1 (left), ease it
+toward its target, and place it between its two homes: one mode step wipes a
+single line across the label, and a wrap from the last mode to the first sweeps
+all of them back at once.  The label's own x is the SUM of those crossed-nesses
+times the pitch, so it slides in step with the lines that are pushing it --
+there is no separate label tween to keep in sync.
+
 Pure Python, no hardware imports, so host/preview_mixer.py renders exactly what
 the panel shows.
 
@@ -94,6 +104,8 @@ TICK_P7 = 0x7F                # y56..y62 | the caps, like a cabinet divider
 TICK_PITCH = 3                # 1px stroke + 2px gap: the space one tick owns
 TICK_X = 1                    # the left lattice starts here
 TICK_GAP = 4                  # px between the label field and the right lattice
+TICK_EASE = 0.28              # per-frame fraction of the remaining crossing
+TICK_SNAP = 0.01              # ... below which it is simply done
 
 SYS_P6 = 0xE0                 # y53..y55 | the system volume bar, level with
 SYS_P7 = 0x07                 # y56..y58 | the caps
@@ -166,6 +178,13 @@ class Mixer:
         # position depends on which mode is showing.
         self._label_w = max(gfx.measure(font, m, SPACING) for m in self.modes)
         self._tick_rx = TICK_X + self._label_w + TICK_GAP
+        # Strips built once: draw_foot runs every frame while the ticks are
+        # crossing, and gfx.text_strip allocates.
+        self._mstrip = tuple(gfx.text_strip(font, m, SPACING) for m in self.modes)
+        self._sysstrip = gfx.text_strip(font, 'SYS.', SPACING)
+        # per tick: 0 = parked on the right of the label, 1 = on the left
+        self._cross = [1.0 if j < self.mode else 0.0
+                       for j in range(len(self.modes) - 1)]
         self.names = [''] * NCOL
         self._strip = [None] * NCOL      # (w, buf) from gfx.text_strip
         self._scroll = [0] * NCOL        # marquee offset, px
@@ -348,11 +367,11 @@ class Mixer:
                     fb[o + x] |= VOL_BASE
 
     # ---- the mode bar ----------------------------------------------------
-    def _text(self, x, s):
-        """Draw a TINY string into the mode bar at column x, straddling the two
-        pages so it sits centred rather than jammed against a boundary.
-        -> the x it ended at."""
-        w, buf = gfx.text_strip(self.font, s, SPACING)
+    def _text(self, x, strip):
+        """Draw a prebuilt TINY strip into the mode bar at column x, straddling
+        the two pages so it sits centred rather than jammed against a
+        boundary."""
+        w, buf = strip
         f6 = self._f6
         f7 = self._f7
         for i in range(w):
@@ -361,20 +380,40 @@ class Mixer:
             b = buf[i]
             f6[x + i] |= (b << _TSHIFT) & 0xFF
             f7[x + i] |= b >> (8 - _TSHIFT)
-        return x + w
 
-    def _ticks(self, x, n):
-        f6 = self._f6
-        f7 = self._f7
-        for i in range(n):
-            c = x + i * TICK_PITCH
-            if c < W:
-                f6[c] |= TICK_P6
-                f7[c] |= TICK_P7
+    def _tick(self, x):
+        if 0 <= x < W:
+            self._f6[x] |= TICK_P6
+            self._f7[x] |= TICK_P7
+
+    def set_mode(self, i):
+        """Point the ticks at mode i.  They ease there; call step_foot() until
+        it returns False."""
+        n = len(self.modes)
+        self.mode = i % n
+        return self.step_foot()
+
+    def step_foot(self):
+        """Advance the tick crossing one frame and repaint the bar.
+        -> True while anything is still moving."""
+        cross = self._cross
+        moving = False
+        for j in range(len(cross)):
+            t = 1.0 if j < self.mode else 0.0
+            c = cross[j]
+            d = t - c
+            if d > TICK_SNAP or d < -TICK_SNAP:
+                cross[j] = c + d * TICK_EASE
+                moving = True
+            elif c != t:
+                cross[j] = t
+        self.draw_foot()
+        return moving
 
     def draw_foot(self):
-        """The mode bar: position ticks split around the mode name, then the
-        system volume.  Cold path -- only redrawn when something changes."""
+        """The mode bar: position ticks either side of the mode name, then the
+        system volume.  Cheap enough to run per frame while the ticks cross,
+        but otherwise only redrawn when something changes."""
         f6 = self._f6
         f7 = self._f7
         f6[:] = _ZERO
@@ -382,26 +421,25 @@ class Mixer:
         for x in range(W):                       # the line closing the meter
             f6[x] |= FOOT_RULE
 
-        n = len(self.modes)
-        i = self.mode if 0 <= self.mode < n else 0
-        left = i                                  # modes behind us
-        right = n - 1 - i                         # ... and ahead
-        # Both lattices are fixed.  The left one fills up from its start as the
-        # mode advances; the right one empties from ITS start, which is why the
-        # ticks read as one moving across the label rather than two groups
-        # growing and shrinking.
         # Think of it as n slots in a row: n-1 hold a tick and one holds the
         # label, and advancing a mode swaps the label with the tick on its
-        # right.  Every slot's x depends only on the index and on the widest
+        # right.  Every home depends only on the tick's index and on the widest
         # mode name, never on the name currently showing -- so the last tick
         # always lands on the same column whatever the label says.
-        self._ticks(TICK_X, left)
-        self._ticks(self._tick_rx + left * TICK_PITCH, right)
-        self._text(TICK_X + left * TICK_PITCH, self.modes[i])
+        i = self.mode if 0 <= self.mode < len(self.modes) else 0
+        cross = self._cross
+        slid = 0.0
+        for j in range(len(cross)):
+            c = cross[j]
+            slid += c
+            lx = TICK_X + j * TICK_PITCH               # its home on the left
+            rx = self._tick_rx + j * TICK_PITCH        # ... and on the right
+            self._tick(int(rx + (lx - rx) * c + 0.5))
+        self._text(TICK_X + int(slid * TICK_PITCH + 0.5), self._mstrip[i])
 
-        sw, sbuf = gfx.text_strip(self.font, 'SYS.', SPACING)
+        sw = self._sysstrip[0]
         bx = W - SYS_BARW
-        self._text(bx - SYS_PAD - sw, 'SYS.')
+        self._text(bx - SYS_PAD - sw, self._sysstrip)
         fill = int(self.sysvol * SYS_BARW + 0.5)
         if fill > SYS_BARW:
             fill = SYS_BARW

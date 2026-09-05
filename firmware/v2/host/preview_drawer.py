@@ -59,11 +59,11 @@ def demo_states():
         dr.update(0.72)
     dr.draw_shelf(0.0)
     dr.draw_row()
-    yield shot(m, dr, sel, drawer.H), 'open: counter, shelf, level of SPOTIFY'
+    yield shot(m, dr, sel, drawer.H), 'open: 24px focus, 16px sides, counter and level flanking'
 
     # mid-scroll, between two apps
     dr.draw_shelf(1.45)
-    yield shot(m, dr, sel, drawer.H), 'scrolling: 16px focus, 8px neighbours'
+    yield shot(m, dr, sel, drawer.H), 'scrolling: all at the 16px tier between slots'
 
     # settled on an app we have no icon for -> placeholder with its initial
     dr.set_focus(3)

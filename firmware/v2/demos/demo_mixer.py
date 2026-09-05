@@ -88,6 +88,7 @@ pos = 0.0                # fractional scroll position
 target = 0.0
 focus = -1
 bg_dirty = True          # the mixer frame behind the panel changed
+bar_moving = False       # the mode ticks are mid-wipe
 
 last = [e.position for e in encs]
 was = [False] * len(sws)
@@ -166,11 +167,12 @@ def levels(now):
             for c in range(mixer.NCOL)]
 
 
-def set_mode(d):
-    """Flip through the mode list.  The bar's ticks ARE the position in it, so
-    redrawing the bar is the whole transition -- there is nothing to animate."""
-    mx.mode = (mx.mode + d) % len(mixer.MODES)
-    mx.draw_foot()
+def flip_mode(d):
+    """Flip through the mode list.  The ticks wipe across to their new side and
+    push the label along with them; bar_moving keeps stepping that until it
+    settles."""
+    global bar_moving
+    bar_moving = mx.set_mode(mx.mode + d)
     lk.send("mode %d" % mx.mode)
     print("mode %d %s" % (mx.mode, mixer.MODES[mx.mode]))
 
@@ -304,10 +306,10 @@ while True:
         down = not btns[b].value
         if down and not bwas[b]:
             if b == 0:
-                set_mode(-1)
+                flip_mode(-1)
                 bg_dirty = True
             elif b == 1:
-                set_mode(1)
+                flip_mode(1)
                 bg_dirty = True
             else:
                 md.tap(MEDIA[b])
@@ -337,6 +339,9 @@ while True:
 
         if (now - t_push) * 1000 >= TICK_MS:
             t_push = now
+            if bar_moving:
+                bar_moving = mx.step_foot()
+                bg_dirty = True
             if is_live(now):
                 v = app_lv[focus] if 0 <= focus < len(app_lv) else 0.0
             elif SIMULATE:
@@ -360,6 +365,8 @@ while True:
     else:
         if (now - t_push) * 1000 >= TICK_MS:
             t_push = now
+            if bar_moving:
+                bar_moving = mx.step_foot()
             mx.update(levels(now))
             mx.draw_dots()
         if (now - t_marq) * 1000 >= MARQ_MS:

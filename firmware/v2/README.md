@@ -171,8 +171,20 @@ label, and advancing a mode swaps the label with the tick on its right. The
 label is left-justified in a field as wide as the longest mode name, so exactly
 two things move: one tick hops to the other side, and the label's leading edge
 steps right by exactly the space that tick now occupies (`TICK_PITCH`, 3 px).
-With the current list the left ticks are always at x = 1, 4, 7 and the last
-tick always lands on x = 51, whatever the label says.
+With the current list every tick is on x = 1, 4, 7 (behind) or x = 45, 48, 51
+(ahead), whatever the label says.
+
+**That hop is animated, and the animation falls out of the geometry** rather
+than being bolted on. Every tick has exactly two homes, one per side of the
+label, and is on the left one precisely when it is behind the current mode. So
+give each a crossed-ness from 0 (right) to 1 (left), ease it toward its target
+and place it between its two homes: one mode step wipes a single line across
+the label, and a wrap from the last mode to the first sweeps all of them back
+at once. The label's own x is the **sum** of those crossed-nesses times the
+pitch, so it slides in step with the lines pushing it — there is no separate
+label tween to keep in sync. `Mixer.set_mode()` starts it, `step_foot()` runs
+one frame and returns False when it settles; 15 frames at the 16 ms tick, so
+about a quarter of a second.
 
 Only **APP CTRL** is implemented. `EQ` has its verbs defined (PROTOCOL.md §10)
 but no V2 screen yet, and `CUSTOM 1/2` are placeholders; flipping to them moves
@@ -328,27 +340,42 @@ and rule are *missing*.
 ```
 | ####----- | ######--- | ########## |  volume bars stay put   page 0
 |           |  MUSIC    |  SPOTIFY   |  edited column blanked, rule gapped
-|        o o O o o                   |  scroll counter         panel page 0
-|   [i]     [ICON]     [i]           |  icon shelf             panel pages 1-2
-|  SPOTIFY  .. .. .. .. ..     |     |  name + level meter     panel page 3
+|             SPOTIFY                |  selected name, full width  panel p0
+|   [ic]     [ ICON ]     [ic]       |  icon shelf, TOP-aligned    panel p1-3
+| o o O o o  [ ICON ]     .. .. |    |  counter and level FLANK it panel p3
 |------------------------------------|
 |  APP CTRL |||        SYS. ######    |  mode bar stays put     pages 6-7
 ```
 
-- **The counter is honest.** One ring per app with a *live audio session*
+Four pages is not much, and the layout is what buys the icons their size back —
+24 px focused, 16 px either side, in a band only three pages tall:
+
+- **the name gets the whole width.** It is the *selected app's* name, not a
+  column heading, so nothing has to share the row and a long name has all
+  128 px before it is trimmed;
+- **the shelf is top-aligned, not bottom-aligned.** Every tier starts on the
+  same page and the focused one simply reaches further down — that is what lets
+  the focus be 24 px while its neighbours are 16 px;
+- **the counter and the level flank the focused icon** rather than sitting
+  under it, in the very row the tall icon is using. A row of their own would
+  have cost the shelf a third of its height. `NEAR` is kept tight (0.30) so the
+  24 px tier never reaches either of them: at the tier edge the icon spans
+  x 39–89, against a counter ending at 38 and a level starting at 90.
+
+- **The counter is honest.** One marker per app with a *live audio session*
   (`appmeter.active()`), filled at the current selection. Nothing playing means
-  no rings — the dropdown still opens (a dead gesture is worse than an empty
-  shelf), it just has nothing to assign.
+  no markers — the dropdown still opens (a dead gesture is worse than an empty
+  shelf), it just has nothing to assign. It drops from 5 px rings to 3 px
+  markers when there are more apps than fit beside the icon.
 - **The bottom row meters the selection, not the column.** It follows the
   scroll, so you see what you are about to assign. Same fast-attack /
   slow-release ballistics as the mixer's bands, with a peak tick on the leading
   edge.
-- **Page-aligned size tiers.** `TIERS = ((16,1),(8,2))` — both a multiple of 8
-  and bottom-aligned on the same floor, so an icon is `fb[o:o+w] = src[s:s+w]`
-  with no bit shifting. The tier comes from the *fractional* distance to the
-  focus, so easing `pos` toward an integer target produces the zoom for free.
-  Two pages is all the taller mode bar leaves, so the zoom is carried by the
-  2:1 size ratio rather than by absolute size.
+- **Page-aligned size tiers.** `TIERS = ((24,1),(16,1))` — both a multiple of
+  8 and starting on the same page, so an icon is `fb[o:o+w] = src[s:s+w]` with
+  no bit shifting. The tier comes from the *fractional* distance to the focus,
+  so easing `pos` toward an integer target produces the zoom for free.
+  `PITCH = 42` puts exactly three icons on screen.
 - **The wipe carries a rule on its leading edge** — the last revealed row is
   forced solid while the panel is moving, so it reads as a surface sliding over
   the meters rather than as content appearing out of nowhere.
