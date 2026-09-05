@@ -32,7 +32,8 @@ host/     PC-side tools (Python 3 + Pillow, pyserial optional)
   gen_font.py     TTF -> ccfont.py (extract repo-root c_c_red_alert_inet.zip
                   into host/font_src/ first)
   preview_mixer.py / preview_drawer.py / preview_gray.py      previews
-  preview_fonts.py  candidate faces at 6px caps -> fonts_preview.png
+  gdifont.py      render text with Windows GDI -- reaches BITMAP (.FON) faces
+  preview_fonts.py  candidate faces at panel scale -> fonts_preview.png
   draw_logos.py / gen_icon.py                                 binary icons
 ```
 
@@ -296,11 +297,34 @@ or closes: 1 plane for the mixer, 4 while the drawer is out.
 A full meter redraw (24 bands + peak markers) costs 1.2 ms against a 2.7 ms
 single-plane frame, and it only runs on the 16 ms tick.
 
-`ccfont.TINY` is rasterized at size 11 and cropped from row 3, giving 6 px caps
-inside one page, and is drawn with `spacing=0` (`mixer.SPACING`). Rendering at
-a size whose *metrics* are 8 rows yields only 4 px caps (illegible); going
-bigger pushes most app names past the 40 px column and forces them all to
-marquee.
+### The font
+
+`ccfont.TINY` is **Small Fonts at height 8** — a Windows *raster* face, drawn by
+hand at fixed pixel sizes, not an outline scaled down. Cropped from row 1 it
+gives 5 px caps inside one page and renders SPOTIFY in 29 px, and it is drawn
+with `spacing=0` (`mixer.SPACING`).
+
+That distinction is the whole game at this scale. An outline face rasterised to
+a 5–6 px cap height loses strokes and joins others no matter how well hinted —
+Tahoma's `A` arrives with no crossbar — while a raster face has every pixel
+where its designer put it. PIL/FreeType **cannot open a `.FON` at all**, which
+is why the first survey never considered them; `host/gdifont.py` renders them
+through GDI instead, and `gen_font.py --list` shows which faces are raster
+(`gdi`) and which are outlines (`ttf`).
+
+A raster face must be asked for a height it actually ships, or GDI scales a
+strike it does not have and the problem comes straight back; `gen_font.py`
+refuses rather than doing that. Small Fonts ships 5, 6, 8, 10–13 and 16.
+
+TINY is generated **all-caps** (lowercase from its uppercase form): eight rows
+will not hold ascenders, caps and descenders together at a legible cap height,
+and the UI is uppercase throughout anyway.
+
+```
+python host/gen_font.py --list          # what faces are on offer
+python host/gen_font.py --face tahoma   # ... try another
+python host/preview_fonts.py            # all of them, side by side, at scale
+```
 
 ```
 python host/appmeter.py             # see the live per-app levels

@@ -42,15 +42,31 @@ EXTRA = [
     ('Courier New', 'cour.ttf', 10, 2),
     ('Impact', 'impact.ttf', 9, 1),
 ]
-CANDIDATES = [('%s (--face %s)' % (k, k), v[0], v[1], v[2])
+CANDIDATES = [('%s (--face %s)' % (k, k), v[0], v[1], v[2], v[3])
               for k, v in sorted(gen_font.FACES.items())]
-CANDIDATES += [(n, os.path.join(WIN, fn), sz, yt) for n, fn, sz, yt in EXTRA]
+CANDIDATES += [(n, 'ttf', os.path.join(WIN, fn), sz, yt)
+               for n, fn, sz, yt in EXTRA]
 
 SAMPLES = ('APP CTRL', 'SPOTIFY', 'CHROME')
 MEASURE = ('SPOTIFY', 'CUSTOM 2')   # the two fits that matter
 H = 8                       # one page: the hard constraint
 SCALE = 4
 COL_W = 40                  # a mixer column's usable width
+
+
+def render_any(kind, src, size, ytop, text):
+    """Raster faces go through GDI, outlines through PIL.  Without this the
+    survey silently omits every bitmap font -- which is most of what is worth
+    looking at down here."""
+    if kind == 'gdi':
+        import gdifont
+        w, rows = gdifont.render(src, size, text)
+        out = []
+        for y in range(H):
+            sy = y + ytop
+            out.append(list(rows[sy]) if sy < len(rows) else [False] * w)
+        return w, out
+    return render(src, size, ytop, text)
 
 
 def render(path, size, ytop, text):
@@ -87,9 +103,9 @@ def ink_rows(rows):
 
 def main(argv):
     out_rows = []
-    for label, path, size, ytop in CANDIDATES:
-        if not os.path.exists(path):
-            print('  -- %-22s MISSING (%s)' % (label, os.path.basename(path)))
+    for label, kind, src, size, ytop in CANDIDATES:
+        if kind == 'ttf' and not os.path.exists(src):
+            print('  -- %-22s MISSING (%s)' % (label, os.path.basename(src)))
             continue
         try:
             widths = {}
@@ -97,14 +113,14 @@ def main(argv):
             top = 8
             bot = 0
             for s in SAMPLES:
-                w, rows = render(path, size, ytop, s)
+                w, rows = render_any(kind, src, size, ytop, s)
                 widths[s] = w
                 a, b = ink_rows(rows)
                 top = min(top, a)
                 bot = max(bot, b)
                 strips.append((s, w, rows))
             for s in MEASURE:               # measured, not drawn
-                widths[s] = render(path, size, ytop, s)[0]
+                widths[s] = render_any(kind, src, size, ytop, s)[0]
         except Exception as e:
             print('  -- %-22s FAILED (%s)' % (label, e))
             continue
