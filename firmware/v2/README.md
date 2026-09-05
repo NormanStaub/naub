@@ -116,10 +116,10 @@ what that app is playing; a footer with the preset and system volume.
 ```
 | ####----- | ######--- | ########## |  volume bar    page 0
 | CHROME    | MUSIC     | SPOTIFY    |  name, marquee page 1
-| : : : : : | : : : : : |            |  8 bands per column, hanging from
-| : : : : : | : :   : : |            |  the top and growing DOWN, each
-| :   : :   | :     :   |            |  with its own peak marker riding
-| -   - -   | -     -   |            |  its leading edge
+| -   - -   | -     -   |            |  8 bands per column, standing on
+| :   : :   | :     :   |            |  the floor and bouncing UP, each
+| : : : : : | : :   : : |            |  with its own peak marker riding
+| : : : : : | : : : : : |            |  its leading edge
 | PRESET 1  |||  SYS. ############   |  footer        page 7
 ```
 
@@ -144,10 +144,11 @@ music sit low in the range, so `appmeter.levels()` applies a gentle curve
 
 ### The meter
 
-Each column is an **upside-down mixer meter with 8 bands**. Every band hangs
-from the top, grows down with its share of the level, and carries a short line
-at its leading edge — the **peak hold**, which jumps straight to any new peak
-and then settles back smoothly, detaching from the falling band.
+Each column is a **mixer meter with 8 bands**. Every band stands on the floor,
+rises with its share of the level, and carries a short line at its leading edge
+— the **peak hold**, which jumps straight to any new peak and then settles back
+down smoothly, detaching from the falling band. The dot texture is anchored to
+the bottom too, so the dots stay put as a band grows instead of crawling.
 
 - **Ballistics** are fast-attack / slow-release on both (`mixer.FALL`,
   `mixer.PEAK_FALL`, tuned for a 16 ms tick); the peak falls ~6x slower than
