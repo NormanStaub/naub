@@ -251,9 +251,22 @@ stops streaming therefore reads as "nothing is playing", not as a frozen panel.
 The 8 bands per column are a *shape* invented on-device from the one amplitude
 the wire carries — never a second source of level.
 
-**Level scaling.** Values are `peak ** 0.45 × 100` — WASAPI peak is linear
-amplitude, and speech and music sit low enough in that range to look dead on a
-small panel. `appmeter.AppMeters(curve=1.0)` sends raw amplitude instead.
+**Level scaling.** Values are `peak ** 0.45 × session volume × 100`.
+
+The gamma is there because WASAPI peak is linear amplitude and speech and music
+sit low enough in that range to look dead on a small panel
+(`appmeter.AppMeters(curve=1.0)` disables it). The session volume is there
+because **the peak is the raw stream**: measured, it does not move when either
+the session or the endpoint volume changes, so a meter built on the peak alone
+would sit still while the user turns the knob. Muted sessions report 0.
+
+Note the order — curve on the peak, fader multiplying the result. The curve is
+meant to lift quiet material into view, not to compress the knob; running the
+fader through it too would make half volume read as 0.73 of full height.
+
+The **system** volume is deliberately excluded: ch 3 changes how loud the
+endpoint is, not how loud any one app is, so it must not move the per-app
+meters.
 
 **Spectrum is not available.** WASAPI exposes per-session *peak*
 (`IAudioMeterInformation`) but no per-session tap — loopback captures the

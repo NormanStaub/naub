@@ -211,6 +211,20 @@ redrawn only when something in it changes, never in the frame loop.
   `IAudioMeterInformation::GetPeakValue()` — a real amplitude trace of that app
   alone, at ~0.05 ms per session, so 100 Hz polling is free. pycaw does not
   wrap the interface; `host/appmeter.py` declares it.
+- **But the peak is the *raw stream*.** Measured on this box: it does not move
+  when the session volume changes, nor when the endpoint volume does — it is
+  what the app rendered, before anybody's fader. A meter built on it alone
+  would sit still while you turn the knob, which is not what a mixer meter
+  means. `levels()` therefore scales by the session's **own** volume and reads
+  zero when muted. The **system** volume is deliberately left out: that is not
+  this app getting quieter.
+- **Curve first, fader second.** The gamma is applied to the peak and the
+  volume multiplies the result, not the other way round. The curve exists to
+  lift quiet program material into view; running the fader through it too would
+  compress the knob (half volume would read as 0.73 of full height instead of
+  half). Verified against a steady tone: 0.75 / 0.50 / 0.25 on the fader give
+  exactly ×0.75 / ×0.50 / ×0.25 on the meter, mute gives zero, and moving the
+  system fader changes nothing.
 - **Per-app spectrum: no.** There is no per-session tap — WASAPI loopback
   captures the endpoint *mix*. A per-app FFT would need code injected into
   every process. So the band shape is **faked** from the one amplitude we do

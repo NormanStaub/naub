@@ -12,6 +12,13 @@ What Windows will and will not give you, since it shapes the UI:
     GetPeakValue() is the largest sample since the last call — a real amplitude
     trace of that app alone.  Costs ~0.05 ms per session, so polling at 100 Hz
     is free.  pycaw does not wrap the interface, so it is declared below.
+  * **But the peak is the RAW STREAM.**  Measured on this box: the value does
+    not move when the session volume changes, nor when the endpoint volume
+    does — it is what the app rendered, before anybody's fader.  So a meter
+    built on it alone would sit still while you turn the knob, which is not
+    what a mixer meter means.  levels() therefore scales by the session's own
+    volume (and zeroes it when muted); the SYSTEM volume is deliberately left
+    out, since it is not this app getting quieter.
   * **Spectrum, no.** There is no per-session tap.  WASAPI loopback captures
     the endpoint *mix*, not one app, so a per-app FFT would need code injected
     into every process.  Hence a scrolling amplitude trace rather than a
@@ -20,6 +27,12 @@ What Windows will and will not give you, since it shapes the UI:
 Peak is an amplitude (0..1 linear), which looks dull on a small display because
 speech and music sit low in the range; `levels()` applies a gentle curve so the
 trace uses the full height.  Set curve=1.0 for raw amplitude.
+
+The curve is applied to the PEAK and the volume multiplies the result, not the
+other way round: the curve exists to lift quiet program material into view, and
+running the fader through it too would compress the knob (half volume would
+read as 0.73 of full height instead of half).  Peak first, then fader, so the
+knob moves the meter linearly and predictably.
 
 TODO: this duplicates part of host/naub_host/audio_windows.py (the V1 host).
 Fold the meter interface back into that module when V2 gets its own daemon.
@@ -73,6 +86,17 @@ class Session:
         except COMError:
             return 0.0
 
+    def gain(self):
+        """This session's fader, 0 when muted.  Cheap enough to read every
+        frame, which is what makes the meter answer the knob immediately
+        rather than a second later when the state poll comes round."""
+        try:
+            if self.vol.GetMute():
+                return 0.0
+            return float(self.vol.GetMasterVolume())
+        except COMError:
+            return 1.0
+
 
 class AppMeters:
     def __init__(self, curve=0.45):
@@ -123,11 +147,19 @@ class AppMeters:
         return out + [''] * (n - len(out))
 
     def levels(self, keys):
+        """What each app actually SOUNDS like right now: its stream peak,
+        curved, then scaled by its own fader.  Muted reads zero."""
         out = []
         for k in keys:
             s = self._by_key.get(k) if k else None
-            p = s.peak() if s else 0.0
-            out.append(p ** self.curve if p > 0.0 else 0.0)
+            if s is None:
+                out.append(0.0)
+                continue
+            p = s.peak()
+            if p <= 0.0:
+                out.append(0.0)
+                continue
+            out.append((p ** self.curve) * s.gain())
         return out
 
     def volume(self, key):
