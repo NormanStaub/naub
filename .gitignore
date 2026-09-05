@@ -32,4 +32,20 @@ naubd/target/
 naubd/config.json
 naubd/naub_state.json
 naubd/*.log
+
+# Generated previews from the V2 display tools (regenerate with host/gen_*.py)
 firmware/v2/host/*_preview.png
+
+# SKiDL artifacts dropped at the repo root when naub_v2.py is run from here
+# instead of pcb/ — regenerate with: python pcb/naub_v2.py  (see pcb/.gitignore)
+/naub_v2.net
+/naub_v2.erc
+/naub_v2.log
+/naub_v2_sklib.py
+
+# Empty KiCad project shell left over from the pre-rename "naub" board;
+# the live design is pcb/naub_kicad.*
+pcb/naub.kicad_pcb
+pcb/naub.kicad_pro
+pcb/naub.kicad_sch
+pcb/naub/
