@@ -19,7 +19,7 @@ demos/    ready-to-flash examples (each becomes code.py) + generated data
   demo_gray_modes.py  8 grayscale techniques on one knob (the experiment)
   demo_ball.py        bouncing ball, dirty-span updates (refresh/motion test)
 host/     PC-side tools (Python 3 + Pillow, pyserial optional)
-  deploy.py       python deploy.py ball|gray|icons|switch -> copies to K:, watches serial
+  deploy.py       python deploy.py mixer|switch|icons|gray|ball -> copies to K:, watches serial
   frc.py          THE reusable piece: ink levels / PIL image -> FRC bitplanes
   appmeter.py     per-app audio level / volume / mute from WASAPI
   appscan.py      enumerate open apps + extract their icons (Windows)
@@ -28,7 +28,8 @@ host/     PC-side tools (Python 3 + Pillow, pyserial optional)
   gen_grad.py     regenerates demos/graygrad.py (gradient planes)
   gen_font.py     TTF -> ccfont.py (extract repo-root c_c_red_alert_inet.zip
                   into host/font_src/ first)
-  preview_switcher.py / preview_gray.py / draw_logos.py / gen_icon.py  previews
+  preview_mixer.py / preview_switcher.py / preview_gray.py    previews
+  draw_logos.py / gen_icon.py                                 binary icons
 ```
 
 ## Display: ST7565R (EA DOGM128W-6, 128x64 STN)
@@ -103,10 +104,10 @@ what that app is playing; a footer with the preset and system volume.
 ```
 | ####----- | ######--- | ########## |  volume bar    page 0
 | CHROME    | MUSIC     | SPOTIFY    |  name, marquee page 1
-| o o o o o | o o o o o |            |  meter hangs from the top
-| o o o o o | o o o o o |            |    |  and grows DOWN
-| --------- | o o o o o |            |    v  with the level
-|           | --------- |            |  peak marker at the leading edge
+| : : : : : | : : : : : |            |  8 bands per column, hanging from
+| : : : : : | : :   : : |            |  the top and growing DOWN, each
+| :   : :   | :     :   |            |  with its own peak marker riding
+| -   - -   | -     -   |            |  its leading edge
 | PRESET 1  |||  SYS. ############   |  footer        page 7
 ```
 
@@ -122,8 +123,8 @@ knob is system volume.
   wrap the interface; `host/appmeter.py` declares it.
 - **Per-app spectrum: no.** There is no per-session tap — WASAPI loopback
   captures the endpoint *mix*. A per-app FFT would need code injected into
-  every process. Hence a scrolling **amplitude** trace, not a frequency
-  analyzer.
+  every process. So the band shape is **faked** from the one amplitude we do
+  get — see "The meter" below.
 
 Peak is linear amplitude, which looks dull on a small panel because speech and
 music sit low in the range, so `appmeter.levels()` applies a gentle curve
