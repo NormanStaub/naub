@@ -49,3 +49,6 @@ pcb/naub.kicad_pcb
 pcb/naub.kicad_pro
 pcb/naub.kicad_sch
 pcb/naub/
+
+# Unpacked from the repo-root c_c_red_alert_inet.zip by hand (see firmware/v2/README.md)
+firmware/v2/host/font_src/
