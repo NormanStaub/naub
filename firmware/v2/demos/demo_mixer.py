@@ -49,6 +49,25 @@ import switcher_data
 
 HOLD = 0.6            # seconds held = mute rather than open the picker
 TICK_MS = 16          # meter update rate; the FALL constants are tuned to it
+
+# The glass sets the useful frame rate, not this loop.  The ST7565R scans at
+# fOSC/(4*65) -- 77 Hz typical, 92 Hz at the fast end of the part's tolerance
+# (device/st7565.py has the datasheet numbers).  Anything faster than the
+# fastest panel this could be cannot appear as a distinct frame, so it is pure
+# current and CPU: this loop free-ran at ~360 fps, i.e. it rewrote the
+# controller's RAM about five times for every frame the glass actually showed.
+# Paced to the top of the tolerance so a fast part is still fed everything it
+# can display.
+#
+# Timed in NANOSECONDS.  time.monotonic() is a float of seconds since boot and
+# its granularity decays with uptime -- MEASURED at 0.488 ms after 1.5 hours,
+# and it gets coarser -- which is a 4% error on a 10.8 ms frame.  Every pacing
+# loop tried (single sleep, sliced, sleep-then-spin) came out at 96.2 Hz for
+# that one reason.  time.monotonic_ns() is an integer, granularity 0.122 ms,
+# and does not decay: with it the same loop paces to 92.5 Hz.
+PANEL_HZ = 92.3
+FRAME_NS = int(1000000000.0 / PANEL_HZ)
+DRAIN_NS = 2000000    # how often to empty the host port while idling; see below
 MARQ_MS = 140         # how often a too-long name scrolls one pixel
 DROP = 0.35           # per-frame fraction of the remaining drop distance
 EASE = 0.30           # ... and of the remaining scroll distance
@@ -322,8 +341,34 @@ def flip_mode(d):
 
 frames = 0
 guard_hit = False
+pending = []              # host lines drained while idling, parsed next frame
 t0 = time.monotonic()
+t_next = time.monotonic_ns()   # when the next plane is due on screen
 while True:
+    # Paced per PUSH rather than per cycle.  With FRC grayscale the grays ARE
+    # the share of time each plane spends on screen, so idling at the end of a
+    # cycle -- holding the last plane through the gap -- would tint them.  One
+    # plane, one slot: 92 Hz for a binary screen, 4 x 92 for the drawer.
+    slot = FRAME_NS // n_planes
+    while True:
+        # Idle in slices, emptying the host port between them.  MEASURED on
+        # this board: the USB CDC receive ring holds ~200 bytes, and the
+        # host's resync burst (labels + levels + mutes + the whole EQ state)
+        # fills it -- at one read per frame the backlog peaked at exactly 200
+        # on connect, against 25 bytes in steady state.  Free-running at
+        # 360 fps the port was read every 2.8 ms and it never came up.
+        # Reading every 2 ms keeps that cover regardless of the frame rate.
+        # The LINES can wait for the frame's parse; the BYTES should not.
+        d = t_next - time.monotonic_ns()
+        if d <= 0:
+            break
+        time.sleep((DRAIN_NS if d > DRAIN_NS else d) * 1e-9)
+        if lk.ready and lk.port.in_waiting:
+            pending.extend(lk.lines())
+    t_next += slot
+    tn = time.monotonic_ns()
+    if tn - t_next > slot:    # a whole slot behind (a long redraw): resync the
+        t_next = tn           # schedule rather than sprint to catch up
     if i >= n_planes:
         # set_screen() keeps this from happening, and a 9700-transition soak
         # never tripped it -- but the observed failure was exactly this state
@@ -346,7 +391,12 @@ while True:
     dim.step(now)
 
     # ---- host ----
-    for msg in lk.lines():
+    msgs = lk.lines()
+    if pending:
+        pending.extend(msgs)      # what was drained while idling comes first
+        msgs = pending
+        pending = []
+    for msg in msgs:
         t = msg.split()
         if not t:
             continue

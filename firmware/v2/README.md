@@ -89,9 +89,10 @@ previews are pixel-exact (WYSIWYG workflow — always preview before flashing).
 | `mixer.update()` + `draw_dots()` together | 4.5 ms |
 | `eqscreen.update()` + `draw_plot()` (meter only) | 3.7 ms |
 | poll 4 encoders + 9 switches | 0.056 ms |
-| whole UI, drawer open and scrolling | 390 fps (97 Hz gray cycle) |
-| whole UI, mixer screen | 359 fps |
-| whole UI, EQ screen | 380 fps |
+| whole UI, paced to the panel (was 359-390 free-running) | 92.3 Hz |
+| `time.monotonic()` granularity at 1.5 h uptime | 0.488 ms |
+| `time.monotonic_ns()` granularity | 0.122 ms |
+| USB CDC receive ring | ~200 bytes |
 | free RAM with mixer + switcher loaded (8 apps, 2 tiers) | 358 kB |
 
 **The panel refreshes at ~77 Hz, and that is a hard cap.** The ST7565R scans
@@ -107,6 +108,27 @@ exactly the effect the FRC grayscale exploits.
 The practical consequence: the 16 ms UI tick (62.5 Hz) is already within a
 whisker of the ceiling. Shortening it buys at most ~20% more distinct frames
 before the glass, not the code, becomes the limit.
+
+So the frame loop is **paced to 92.3 Hz** — the top of the panel's tolerance,
+so a fast part is still fed everything it can show, and nothing is spent on
+frames no panel could display. It free-ran at 359-390 fps, i.e. it rewrote the
+controller's RAM about five times per displayed frame. Two things the pacing
+had to get right:
+
+* **Paced per push, not per cycle.** The FRC grays *are* the share of time each
+  plane spends on screen, so idling at the end of a cycle — holding the last
+  plane through the gap — would tint them. One plane, one slot: 92 Hz for a
+  binary screen, 4 × 92 for the drawer.
+* **Timed in `monotonic_ns()`.** `time.monotonic()` returns a float of seconds
+  since boot and its granularity decays with uptime — measured at **0.488 ms
+  after 1.5 hours**, which is a 4% error on a 10.8 ms frame. Every pacing loop
+  tried (single sleep, sliced, sleep-then-spin) landed on 96.2 Hz for that one
+  reason. `monotonic_ns()` is an integer and does not decay: same loop, 92.4 Hz.
+
+And one consequence: the idle time has to be spent, not just slept through. The
+USB CDC receive ring holds ~200 bytes and the host's resync burst fills it, so
+the loop wakes every 2 ms to empty the port and parses the lines on the next
+frame. Backlog on connect went from 200 bytes to 25 in steady state.
 
 **What limits the frame rate below that.** Not the panel interface. A full frame
 costs

@@ -13,9 +13,11 @@ Stopping the redraw to save a milliamp would mean waking to a stale meter.
 
 **Why a fade and not a switch.**  A backlight that snaps between levels reads
 as a fault -- the eye catches the step and looks for what caused it.  Ramped
-over a second or so it reads as the panel settling down, which is what it is.
-Waking is the other way round: it is a response to something you just did, so
-it is quick (FADE_UP_S) or it feels laggy.
+over three seconds it reads as the panel settling down, which is what it is,
+and nothing about it asks to be looked at.  Waking is the other way round: it
+is a response to something you just did, so it is quick (FADE_UP_S) or it feels
+laggy.  Note that the fade is stepped by the frame loop, which is paced to the
+panel at ~92 Hz -- 3 s is roughly 280 steps, far finer than the eye.
 
 **Why the ramp is not linear in duty.**  Perceived brightness goes roughly as
 luminance ** (1/2.2), and the PWM duty IS the luminance, so a straight line in
@@ -36,7 +38,7 @@ STAGES = ((60.0, 10.0),
           (300.0, 0.0))
 
 FADE_UP_S = 0.10              # waking: fast enough to feel like a response
-FADE_DOWN_S = 1.20            # settling: slow enough not to read as a fault
+FADE_DOWN_S = 3.00            # settling: slow enough not to read as a fault
 GAMMA = 2.2                   # see the note above
 
 
