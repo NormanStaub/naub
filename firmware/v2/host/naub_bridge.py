@@ -43,6 +43,7 @@ import serial
 from serial.tools import list_ports
 
 import appmeter
+import eqapo
 
 NCOL = 3
 VID_PID = '2E8A'
@@ -115,6 +116,7 @@ class Bridge:
         self.pinned = [None] * NCOL   # columns the device chose by hand
         self.vol = [None] * (NCOL + 1)
         self.muted = [None] * (NCOL + 1)   # ... + the system endpoint
+        self.eq = eqapo.ParametricEq()
         self._rx = b''
 
     def send(self, s):
@@ -185,7 +187,24 @@ class Bridge:
         t = line.split()
         if not t:
             return
-        if t[0] == 'pong':
+        if t[0] == 'eqp' and len(t) == 4:
+            i, param, val = int(t[1]), t[2], t[3]
+            if 0 <= i < len(self.eq.bands):
+                if param == 'kind':
+                    self.eq.set_band(i, kind=val)
+                elif param == 'on':
+                    self.eq.set_band(i, on=val == '1')
+                elif param == 'gain':
+                    self.eq.set_band(i, db=float(val))
+                elif param == 'freq':
+                    self.eq.set_band(i, f0=float(val))
+                elif param == 'q':
+                    self.eq.set_band(i, q=float(val))
+                print('  eq band %d %s -> %s' % (i, param, val))
+        elif t[0] == 'eqflat':
+            self.eq.flat()
+            print('  eq flat')
+        elif t[0] == 'pong':
             print('  pong')
         elif t[0] == 'mode' and len(t) == 2:
             print('  mode -> %s' % t[1])
@@ -238,6 +257,17 @@ class Bridge:
         for raw in parts:
             self.handle(raw.decode('utf-8', 'replace').strip())
 
+    def push_eq(self):
+        """Everything the EQ screen needs: what the engine can do, whether it
+        would be heard at all, and where every band currently sits."""
+        ok, why = self.eq.status()
+        self.send('eqcaps %d %g %g %g %d %d'
+                  % (len(self.eq.bands), eqapo.FMIN, eqapo.FMAX, eqapo.MAXDB,
+                     48000, 1 if ok else 0))
+        for i, b in enumerate(self.eq.bands):
+            self.send('eqband %d %s' % (i, b.wire()))
+        print('eq: %s -- %s' % ('ready' if ok else 'INERT', why))
+
     def resync(self):
         """Push everything the device needs after a (re)connect.  It boots with
         nothing and is not the source of truth for volume -- see PROTOCOL.md
@@ -250,6 +280,7 @@ class Bridge:
         self.push_apps(force=True)
         self.push_names(force=True)
         self.push_state()
+        self.push_eq()
 
     def run(self, seconds=0.0):
         """Stream until --seconds elapses, or forever.  Raises Dropped when the
@@ -282,6 +313,9 @@ class Bridge:
                         '%-10s %3d%% %s' % (k or '-', int(v * 100),
                                             '#' * int(v * 18))
                         for k, v in zip(self.keys, lv)))
+            # Debounced: a knob per detent would otherwise make Equalizer
+            # APO re-parse the user's whole config a hundred times a second.
+            self.eq.tick(now)
             if now >= next_scan:
                 next_scan = now + RESCAN_S
                 self.src.refresh()
@@ -388,7 +422,9 @@ def main(argv):
                 port = fixed if fixed else found
                 if port and (found or fixed):
                     break
-            print('reconnected on %s' % port)
+            # Deliberately not announcing a reconnect here: the port merely
+            # reappeared in the enumeration, and opening it can still fail.
+            # serve() saying nothing and then streaming is the real signal.
     except KeyboardInterrupt:
         print('\nstopped')
 

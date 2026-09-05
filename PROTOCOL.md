@@ -238,6 +238,10 @@ ignored). Implemented in `firmware/v2/device/link.py` and
 | `ameter <v0> <v1> …` | H→D | One level per entry of the last `apps` list, 0–100, pushed at the same rate. The switcher meters whichever entry is under the scroll. |
 | `pick <ch> <APP>` | D→H | The user assigned `<APP>` to column `<ch>` from the switcher. The host **pins** that column: it stops reassigning it as the busiest sessions churn. |
 | `mode <idx>` | D→H | The mode bar was flipped (BTN1 back, BTN2 forward). `<idx>` indexes the device's mode list — `APP CTRL`, `EQ`, `CUSTOM 1`, `CUSTOM 2`. Informational: the device owns which mode it is in. |
+| `eqcaps <n> <fmin> <fmax> <maxdb> <sr> <ok>` | H→D | On connect: how many bands the host offers, the frequency range, the gain full scale, the endpoint sample rate (the device needs it to draw a truthful curve), and whether the engine would actually be heard. **`ok=0` is not an error** — Equalizer APO is attached per endpoint, so it is entirely normal for it to be installed and yet inert on the current device. The device says so rather than pretending to EQ. |
+| `eqband <i> <kind> <f0> <db> <q> <on>` | H→D | One band's full state: `kind` is `PK`/`LSC`/`HSC`, `f0` in Hz, `db` gain, `q`, `on` as 0/1. Sent for every band on connect, and again whenever something changes the EQ on the PC. |
+| `eqp <i> <param> <value>` | D→H | One EQ parameter moved. `param` ∈ `gain freq q kind on`; `value` is a float (or the kind token). The host clamps, applies and echoes nothing back — same non-echo rule as `vol`. |
+| `eqflat` | D→H | Reset every band to 0 dB and off. |
 | `btn <n> <0|1>` | D→H | An aux key changed state. V2 reports it **momentary** (1 on press, 0 on release), not V1's latch, because the keys it is used for are transport keys. |
 
 **Why levels are a separate verb from `level`.** `level` is a *volume* (where
@@ -297,6 +301,24 @@ is just the usage ID as a little-endian `uint16`, `0` meaning released, so
 `firmware/v2/device/media.py` needs no HID library. Verified end to end with a
 `WH_KEYBOARD_LL` hook: all three arrive as `MEDIA_PREV_TRACK` /
 `MEDIA_PLAY_PAUSE` / `MEDIA_NEXT_TRACK`.
+
+### EQ: why the parameters go over the wire and the filtering does not
+
+naub implements no DSP. Equalizer APO is already a parametric EQ inside the
+Windows audio pipeline, so the host writes it a config file and the device is a
+control surface for it. `eqp` carries a parameter change; the host renders it
+into a filter line; Equalizer APO does the arithmetic on the audio.
+
+The device draws the curve itself, from the same RBJ cookbook coefficients
+Equalizer APO implements — so the plot is the response the audio actually gets,
+not an illustration of one. That is also why `eqcaps` carries the **sample
+rate**: the curve is evaluated on the unit circle, so it is only truthful at
+the rate the endpoint is running.
+
+Values are sent in natural units (Hz, dB, Q), not as 0..100 knob positions like
+`vol`. A knob position would force both ends to agree on a mapping curve, and
+frequency and Q are log-mapped, so the device owns that mapping and the wire
+stays unambiguous.
 
 ### What V2 does *not* carry over from V1
 

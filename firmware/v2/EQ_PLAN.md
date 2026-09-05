@@ -24,6 +24,21 @@ this is an extension of working code rather than a new subsystem.
 
 ---
 
+## 0. Status — what is built
+
+Everything except the screen itself, which is waiting on a layout:
+
+| piece | where | state |
+|---|---|---|
+| N-band parametric config writer | `host/eqapo.py` | **done**, engine-status check included |
+| curve maths + knob mappings | `device/eqcurve.py` | **done**, validated to 1e-11 dB against numpy |
+| protocol verbs | PROTOCOL.md §11, `link.py`, `naub_bridge.py` | **done**, pushes on connect |
+| EQ screen layout and controls | `device/` | **waiting on a drawing** |
+
+The two host-side pieces are testable without the device:
+`python host/eqapo.py` reports the engine status and the config it would write;
+`--check` proves an install/uninstall cycle leaves `config.txt` byte-identical.
+
 ## 1. What already exists
 
 - **`host/naub_host/eq_windows.py`** — `GlobalEq`: writes `naub-eq.txt`, adds a
@@ -42,9 +57,22 @@ this is an extension of working code rather than a new subsystem.
 Probed via the registry and the config directory:
 
 - **Equalizer APO 1.4**, installed at `C:\Program Files\EqualizerAPO`, config in
-  `…\config`. It is **attached to two render endpoints** (`Child APOs` in
-  `HKLM\SOFTWARE\EqualizerAPO`, one carrying a `PreMixChild`). Installed *and*
-  enabled — the Configurator step is already done.
+  `…\config`.
+- **But it is inert on the machine's current output**, and this is the single
+  most important thing measured. It is attached to exactly one real endpoint —
+  **BESTISAN SR01 Stereo**, a Bluetooth speaker whose `DeviceState` is
+  `NOTPRESENT` — while the actual default output, *Speakers (High Definition
+  Audio Device)*, has no Equalizer APO at all.
+
+  Verified end to end, not inferred: playing noise, capturing the endpoint
+  loopback, writing a −24 dB notch at 1 kHz and capturing again moved that band
+  by **+1.02 dB**, i.e. not at all. Checking "is Equalizer APO installed?"
+  would have said yes and been useless. `eqapo.status()` therefore checks
+  whether it is attached to the endpoint *currently in use*, and says which
+  device to add in the Configurator when it is not.
+
+  Until that is done, the EQ mode will correctly report itself inert rather
+  than pretending to work.
 - **`config.txt` is yours**: a 20-filter PEQ export (`Filter 1: ON PEQ Fc 22.0
   Hz …`, currently all 0.00 dB) plus an active `Include: pce_chnl.txt` holding
   your channel routing (`Copy: RF=-1*R`, …). naub must never own or rewrite
@@ -135,36 +163,40 @@ A knob at one detent per ~10 ms would trigger that 100×/s. So:
 
 ## 6. Device side
 
-### 6.1 Drawing the curve — measured, and it constrains the design
+### 6.1 Drawing the curve — built and measured
 
-The curve is the summed magnitude response of N biquads at the 128 screen
-columns. Evaluating `|H(e^jω)|` analytically with the trig precomputed once per
-column (`cos ω`, `sin ω`, `cos 2ω`, `sin 2ω`), so a redraw is multiply-add per
-band per column plus one log per column:
+`device/eqcurve.py`. The curve is the summed magnitude response of N biquads at
+the 128 screen columns, evaluated analytically on the unit circle with the trig
+precomputed once per column — so a redraw is multiply-add per band per column,
+plus one logarithm per column at the very end (magnitudes are kept *squared*
+throughout so the log happens once, not once per band).
 
-| bands | per curve | redraws/s |
-|---|---|---|
-| 3 | 20.3 ms | 49 |
-| 5 | 31.4 ms | 32 |
-| 8 | 47.4 ms | 21 |
+Measured with the real module on the RP2350, five bands:
 
-(Precompute is 7.8 ms, once at import. Measured on the RP2350 at
-CircuitPython 10.3.0 — `tmp/eq_curve_bench.py`.)
+| operation | cost |
+|---|---|
+| construct, incl. trig tables | 9.8 ms, once |
+| recompute one band | 4.9 ms |
+| re-multiply the bands | 5.2 ms |
+| `heights(40)` | 3.1 ms |
+| **one knob detent** (`set` + `heights`) | **13.0 ms** |
+| rebuild all five from scratch | 29.7 ms |
 
-**31 ms is far too slow to run every frame** — the mixer's frame budget is
-2.7 ms. It is fine as a *redraw on change*, but at 32/s a fast knob spin would
-still visibly lag. Three mitigations, in order of value:
+So a detent costs 13 ms — about 77 updates a second, comfortably ahead of any
+knob — because **only the band that moved is recomputed**. Each band keeps its
+own magnitude array and the screen curve is their product; a rebuild of all
+five would be 33 ms and would visibly lag a fast spin.
 
-1. **Recompute only the band that moved.** Keep a per-band magnitude array and
-   a running product; a knob move recomputes one band (~6 ms) and re-multiplies
-   (~2 ms) instead of all five. ~8 ms per detent.
-2. **Defer while spinning.** Same trick `demo_mixer` already uses for the
-   switcher's label: draw a cheap marker while the knob moves, draw the full
-   curve when it nearly settles.
-3. **Half resolution.** 64 points interpolated to 128 halves the cost and is
-   indistinguishable on a 40 px tall curve.
+Two further economies are in the code: bands that are off or flat are the
+identity and are skipped entirely rather than multiplied in as 128 ones (the
+common case is one or two bands live), and `heights()` is separate from `set()`
+so the screen can defer drawing while a knob is still moving.
 
-With (1) and (2) the screen stays responsive without any of it being clever.
+Correctness matters as much as speed here — a wrong shelf looks perfectly
+plausible on a 40 px plot. `tmp/check_eqcurve.py` checks the module against an
+independent numpy evaluation of the same transfer function: peaking bands match
+to **2e-11 dB**, shelves reach their asymptotic gain, multiple bands sum in dB,
+and an incremental update is bit-identical to a from-scratch rebuild.
 
 ### 6.2 Layout
 
@@ -238,10 +270,17 @@ bottom four octaves would live in the first two detents.
   is not enough; the Configurator attaches it per device. Detect it (the
   registry key already gives this) and have the EQ mode say so rather than
   silently doing nothing.
-- **`config.txt` belongs to the user.** Append one guarded line, never rewrite;
-  offer a clean removal path. *(Noted from experience: calling `set_db()` while
-  probing created `naub-eq.txt` and appended the include to the live config —
-  both reverted. Any tooling that touches this needs to be explicit about it.)*
+- **`config.txt` belongs to the user, down to the byte.** Append one guarded
+  line, never rewrite, and be able to take it back out exactly.
+
+  Worth stating plainly because the first attempt got it wrong: the include
+  block was appended with a decorative leading blank line but removed by
+  filtering the two content lines, so **every install/uninstall cycle grew the
+  user's file by one newline**. Six had accumulated (1537 → 1549 bytes) before
+  it was caught, and the file was restored by hand. `eqapo.py` now appends a
+  verbatim block, removes that exact block, preserves the file's CRLF endings,
+  and `python host/eqapo.py --check` asserts three full cycles leave it
+  byte-identical.
 - **Boost + an existing PEQ can clip.** Hence the preamp in §5.1.
 - **Re-parse cost grows with the user's own config**, not ours — 20 filters
   here. Debounce as in §5.3.

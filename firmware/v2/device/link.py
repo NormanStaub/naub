@@ -23,11 +23,19 @@ Verbs used by the mixer screen (V1 verbs kept, `meter` added for V2):
                                   list, comma separated because process names
                                   can contain spaces  (V2)
            ameter <v0> <v1> ...   one level per entry in that list  (V2)
+           eqcaps <n> <fmin> <fmax> <maxdb> <sr> <ok>
+                                  what the EQ engine offers, on connect; ok=0
+                                  means writing filters would do nothing  (V2)
+           eqband <i> <kind> <f0> <db> <q> <on>
+                                  one band's full state  (V2)
     D->H   naub proto=2 ...       banner, on connect
            vol   <ch> <0..100>    a knob moved
            mute  <ch> <0|1>       a knob was held
            pick  <ch> <APP>       the switcher assigned an app to a column;
                                   the host pins it there  (V2)
+           eqp   <i> <param> <v>  an EQ parameter moved; param is one of
+                                  gain freq q kind on  (V2)
+           eqflat                 reset every band  (V2)
 """
 import usb_cdc
 
