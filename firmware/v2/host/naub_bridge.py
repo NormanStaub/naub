@@ -44,8 +44,11 @@ from serial.tools import list_ports
 
 import appmeter
 import eqapo
+import sysmeter
 
 NCOL = 3
+SBANDS = 21               # must match device/eqscreen.NMETER
+EQ_MODE = 1               # ... and demo_mixer.EQ_MODE
 VID_PID = '2E8A'
 RESCAN_S = 1.0            # how often to re-enumerate audio sessions
 RECONNECT_S = 1.0         # how often to look for the board after it vanishes
@@ -117,6 +120,14 @@ class Bridge:
         self.vol = [None] * (NCOL + 1)
         self.muted = [None] * (NCOL + 1)   # ... + the system endpoint
         self.eq = eqapo.ParametricEq()
+        # The EQ screen's meter is a REAL analysis of the system output, not an
+        # invented shape: per-app spectrum does not exist, but the endpoint can
+        # be captured.  Optional -- without it the screen just shows a floor.
+        self.sys = sysmeter.SysMeter(nband=SBANDS)
+        self.sys_ok = self.sys.start()
+        if not self.sys_ok:
+            print('system spectrum unavailable: %s' % self.sys.error)
+        self.mode = 0
         self._rx = b''
 
     def send(self, s):
@@ -204,6 +215,10 @@ class Bridge:
         elif t[0] == 'eqflat':
             self.eq.flat()
             print('  eq flat')
+        elif t[0] == 'mode' and len(t) == 2:
+            # Track it so the spectrum is only streamed to the screen that
+            # draws it -- 21 numbers at 50 Hz is bandwidth worth not wasting.
+            self.mode = int(t[1])
         elif t[0] == 'pong':
             print('  pong')
         elif t[0] == 'mode' and len(t) == 2:
@@ -306,6 +321,9 @@ class Bridge:
                     self.send('ameter %s' % ' '.join(
                         '%d' % int(min(1.0, x) * 100 + 0.5)
                         for x in self.src.levels(self.apps)))
+                if self.sys_ok and self.mode == EQ_MODE:
+                    self.send('smeter %s' % ' '.join(
+                        '%d' % int(v * 100 + 0.5) for v in self.sys.bands()))
                 sent += 1
                 if now >= next_log:
                     next_log = now + 1.0

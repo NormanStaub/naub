@@ -350,10 +350,17 @@ shelf: the tone-control split, written by the host as `LSC` / `PK` / `HSC`.
 - **0 dB is the vertical middle**, so flat is a straight line across the centre
   and the curve reads as deviation in both directions. 48 rows, so the centre
   lands *on* a row rather than between two.
-- **The dot fill hangs from the curve**, on a grid anchored to the bottom so it
-  stays put as the curve moves instead of crawling — same reasoning as the
-  meter bands. Every curve height is precomputed as page masks, so a column is
-  six byte writes.
+- **Under the curve is a real meter of the system output**, not a decorative
+  fill: 21 bands rising from the floor, styled exactly like the app meters —
+  same 2px dots, same peak markers, same ballistics. It is also *accurate*,
+  which the app meters cannot be: Windows exposes no per-session spectrum, but
+  the endpoint can be captured, so `host/sysmeter.py` runs a real FFT on the
+  WASAPI loopback and sends 21 log-spaced bands over. What you see is what is
+  leaving the machine, past the EQ and past the mix.
+  (The endpoint's own `IAudioMeterInformation` looked like the easy answer and
+  is not — measured, it moves ×0.91 when the system fader drops to 0.30, i.e.
+  it reports the stream *before* the volume, and it is one number rather than a
+  spectrum.)
 - **The separators stop at the curve**, which is what makes it read as a
   surface with the dots beneath rather than a line drawn over a texture.
 - **Knobs:** ENC1-3 turn their band; click cycles what that knob edits —
@@ -366,6 +373,20 @@ shelf: the tone-control split, written by the host as `LSC` / `PK` / `HSC`.
   can be installed and still inert on the current output; the screen says
   `NO EQ ENGINE ON THIS OUTPUT` rather than drawing a curve that shapes
   nothing. See `EQ_PLAN.md` §2.
+
+**Changing modes wipes**, right to left: a vertical line sweeps across and the
+new screen follows behind it (`device/wipe.py`). In this framebuffer the byte
+index *is* x, so a wipe frame is two slice copies per page — 1.5 ms — rather
+than any per-pixel work. The mode bar is deliberately left out of it so its
+ticks can run their own animation underneath: the ticks mean "where you are in
+the list", the wipe means "the screen is changing".
+
+Two measurements shaped the screen. Splitting the plot into a prebuilt curve
+layer and a live meter layer took a tick from 9.4 ms to 3.3 ms — only a band
+change moves the curve, while the meter moves 60 times a second. And caching
+the header's text strips took `draw_head` from **11.8 ms to 3.3 ms**: six
+strings rebuilt per frame were three times the cost of the entire meter and the
+single biggest thing on the screen. Together: 105 fps → **352 fps**.
 
 ```
 python host/eqapo.py            # engine status + the config it would write

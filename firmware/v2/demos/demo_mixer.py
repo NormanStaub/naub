@@ -36,7 +36,7 @@
 # Deploy: python host/deploy.py mixer
 import random
 import time
-import naubhw, ccfont, drawer, eqcurve, eqscreen, link, media, mixer
+import naubhw, ccfont, drawer, eqcurve, eqscreen, link, media, mixer, wipe
 import switcher_data
 
 HOLD = 0.6            # seconds held = mute rather than open the picker
@@ -46,6 +46,8 @@ DROP = 0.35           # per-frame fraction of the remaining drop distance
 EASE = 0.30           # ... and of the remaining scroll distance
 LIVE_S = 1.0          # no `meter` for this long = the host went away
 SIMULATE = False      # invent levels with no host?  See the note above.
+
+_ZERO_SPEC = [0.0] * 21   # no host = no spectrum, so show a flat floor
 
 APP_MODE = 0          # index into mixer.MODES that owns the mixer screen
 EQ_MODE = 1           # ... and the one that owns the EQ screen
@@ -88,6 +90,17 @@ for _i, (_k, _f, _q) in enumerate(EQ_INIT):
     eq_scr.handles[_i] = eq_cur.column_of(_f)
 eq_param = [P_GAIN] * eqscreen.NBAND      # which parameter each knob edits
 eq_dirty = True
+eq_ys = None                              # cached curve; None = recompute
+sys_lv = [0.0] * eqscreen.NMETER          # the system spectrum, from the host
+
+# A mode change wipes right to left.  The mode bar is left out of it so its
+# ticks can run their own animation underneath -- two movements that mean two
+# different things.
+tr = wipe.Wipe(p0=0, p1=6)
+tr_fb = bytearray(mixer.W * 8)
+# a LIST of planes, like mx_views/dr_views: the frame loop indexes views[plane]
+# and hands the result to show_pages(), which wants that plane's page views
+tr_views = [disp.make_views(tr_fb)]
 
 for c in range(mixer.NCOL):
     mx.set_name(c, dr.apps[c % len(dr.apps)] if dr.apps else '')
@@ -120,7 +133,7 @@ last = [e.position for e in encs]
 was = [False] * len(sws)
 press_t = [0.0] * len(sws)
 bwas = [False] * len(btns)
-t_push = t_marq = time.monotonic()
+t_push = t_marq = t_wipe = time.monotonic()
 
 views = mx_views
 n_planes = len(views)      # mixer is binary (1 plane); the drawer is FRC (4)
@@ -145,20 +158,26 @@ def eq_text(i):
     return '%+.1f' % b.db
 
 
-def eq_refresh(full=True):
-    """Redraw the EQ screen.  The curve is the expensive part (~13 ms for a
-    band change), so the header alone can be redrawn without it."""
-    global eq_dirty
+def eq_refresh(curve=False):
+    """Redraw the EQ screen.
+
+    `curve` recomputes the response, which only a band change can move -- the
+    meter underneath ticks at 60 Hz and must not drag 3 ms of heights() along
+    with it every time, so the ys are cached."""
+    global eq_dirty, eq_ys
     for i in range(eqscreen.NBAND):
         eq_scr.gains[i] = eq_cur.bands[i].db
         eq_scr.handles[i] = eq_cur.column_of(eq_cur.bands[i].f0)
         eq_scr.set_label(i, eq_text(i))
     eq_scr.draw_head()
-    if full:
-        if eq_scr.engine:
-            eq_scr.draw_plot(eq_cur.heights(eqscreen.PLOT_H))
+    if not eq_scr.engine:
+        eq_scr.draw_no_engine()
+    else:
+        if curve or eq_ys is None:
+            eq_ys = eq_cur.heights(eqscreen.PLOT_H)
+            eq_scr.draw_plot(eq_ys)      # rebuilds the curve layer too
         else:
-            eq_scr.draw_no_engine()
+            eq_scr.draw_plot()           # meter only: the curve has not moved
     sync_foot()
     eq_dirty = False
 
@@ -238,17 +257,21 @@ def flip_mode(d):
     """Flip through the mode list.  The ticks wipe across to their new side and
     push the label along with them; bar_moving keeps stepping that until it
     settles."""
-    global bar_moving, views, n_planes
+    global bar_moving, views, n_planes, eq_ys
     was_eq = mx.mode == EQ_MODE
     bar_moving = mx.set_mode(mx.mode + d)
     lk.send("mode %d" % mx.mode)
     print("mode %d %s" % (mx.mode, mixer.MODES[mx.mode]))
     if mx.mode == EQ_MODE:
-        eq_refresh()
+        eq_ys = None
+        eq_refresh(True)
     elif was_eq:
         mx.render()
-    views = screen_views()
-    n_planes = len(views)
+    # snapshot what is on screen now, then wipe to what the new mode draws
+    tr.start(eq_scr.planes[0] if was_eq else mx.planes[0],
+             eq_scr.planes[0] if mx.mode == EQ_MODE else mx.planes[0])
+    views = tr_views
+    n_planes = 1
 
 
 i = 0
@@ -316,13 +339,17 @@ while True:
             # installed and still inert on the current output.
             eq_cur.set_rate(float(t[5]))
             eq_scr.engine = t[6] == '1'
+            eq_ys = None
             eq_dirty = True
             print("eq engine: %s" % ("ready" if eq_scr.engine else "INERT"))
+        elif v == 'smeter':
+            sys_lv = [int(x) * 0.01 for x in t[1:]]
         elif v == 'eqband' and len(t) == 7:
             i = int(t[1])
             if 0 <= i < eqscreen.NBAND:
                 eq_cur.set(i, t[2], float(t[3]), float(t[4]), float(t[5]),
                            t[6] == '1')
+                eq_ys = None
                 eq_dirty = True
         elif v == 'ping':
             lk.send('pong')
@@ -347,16 +374,19 @@ while True:
                 g = max(-eqcurve.MAXDB,
                         min(eqcurve.MAXDB, b.db + d * EQ_GAIN_STEP))
                 eq_cur.set(c, db=g)
+                eq_ys = None
                 lk.send("eqp %d gain %.2f" % (c, g))
             elif p == P_FREQ:
                 f = eqcurve.pos_to_freq(
                     eqcurve.freq_to_pos(b.f0) + d * EQ_FREQ_STEP)
                 eq_cur.set(c, f0=f)
+                eq_ys = None
                 lk.send("eqp %d freq %.4g" % (c, f))
             else:
                 q = eqcurve.pos_to_q(
                     eqcurve.q_to_pos(b.q) + d * EQ_Q_STEP)
                 eq_cur.set(c, q=q)
+                eq_ys = None
                 lk.send("eqp %d q %.3g" % (c, q))
             eq_dirty = True
         elif mode == 0:
@@ -479,6 +509,10 @@ while True:
         if bar_moving:
             bar_moving = mx.step_foot()
             sync_foot()
+        if (now - t_push) * 1000 >= TICK_MS:
+            t_push = now
+            eq_scr.update(sys_lv if live else _ZERO_SPEC)
+            eq_dirty = True
         if eq_dirty:
             eq_refresh()
     else:
@@ -492,6 +526,18 @@ while True:
             t_marq = now
             if mx.marquee():
                 mx.draw_names()
+
+    # ---- the mode wipe -------------------------------------------------
+    # Last, so the screens underneath have already been updated this frame:
+    # the incoming half of the wipe is live, not a still.  Stepped on the same
+    # tick as everything else, or at 380 fps it would be over in 37 ms.
+    if tr.active and (now - t_wipe) * 1000 >= TICK_MS:
+        t_wipe = now
+        o = mixer.PAGE_FOOT * mixer.W          # the mode bar is not wiped
+        tr_fb[o:o + mixer.W] = mx.planes[0][o:o + mixer.W]
+        if not tr.step(tr_fb):
+            views = screen_views()
+            n_planes = len(views)
 
     if frames >= 1024:
         t1 = time.monotonic()

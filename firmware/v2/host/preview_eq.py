@@ -12,6 +12,9 @@ import sys
 
 from PIL import Image
 
+import math
+import random
+
 import ccfont
 import eqcurve
 import eqscreen
@@ -54,6 +57,21 @@ def shots():
     scr, cur, mx = build()
     out = []
 
+    def spectrum(shape):
+        """Stand in for host/sysmeter.py: a plausible music spectrum, so the
+        preview shows the meter the panel will actually draw."""
+        random.seed(4)
+        out = []
+        for i in range(eqscreen.NMETER):
+            t = i / (eqscreen.NMETER - 1.0)
+            base = shape(t)
+            out.append(max(0.0, min(1.0, base + (random.random() - 0.5) * 0.18)))
+        return out
+
+    def settle(shape, n=25):
+        for _ in range(n):
+            scr.update(spectrum(shape))
+
     def snap(tag):
         ys = cur.heights(eqscreen.PLOT_H)
         for i in range(eqscreen.NBAND):
@@ -63,7 +81,9 @@ def shots():
         scr.render(ys)
         out.append((frc.avg_image([compose(scr, mx)], SCALE), tag))
 
-    snap('flat: 0 dB is the middle row')
+    music = lambda t: 0.85 - 0.55 * t          # noqa: E731 -- tilted, like music
+    settle(music)
+    snap('flat: 0 dB is the middle row, meter live beneath')
 
     cur.set(0, db=1.5)
     cur.set(2, db=1.0)
@@ -75,11 +95,13 @@ def shots():
     snap('a real shape: +6 / -5 / +4')
 
     cur.set(1, f0=300.0, q=3.0)
-    snap('MID moved to 300 Hz, Q 3 -- a narrow notch')
+    settle(lambda t: 0.95 - 0.75 * t)
+    snap('MID at 300 Hz, Q 3; bass-heavy programme')
 
     cur.set(0, db=-10.0)
     cur.set(1, db=0.0)
     cur.set(2, db=-8.0)
+    settle(lambda t: 0.3 + 0.45 * math.sin(t * 3.1))
     snap('cuts: the curve dips below centre')
 
     scr.engine = False

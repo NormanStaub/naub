@@ -21,11 +21,20 @@ across the centre and the curve reads as deviation from flat in both
 directions.  The plot is 48 rows, pages 1..6, so the centre lands on a row
 rather than between two.
 
-The dot fill hangs from the curve down to the floor, on a grid anchored to the
-BOTTOM so the dots stay put as the curve moves rather than crawling with it --
-the same reasoning as the mixer's meter bands.  Every possible curve height is
-precomputed as page masks (FILL), so drawing a column is six byte writes and a
-redraw is ~768 of them rather than 6000 per-pixel calls.
+Under the curve is a **real meter of the system output**, not a decorative
+fill: 21 bands rising from the floor, styled exactly like the mixer's app
+meters -- same 2px dots, same peak markers riding the leading edge, same
+fast-attack/slow-release ballistics.
+
+It is also *accurate*, which the app meters cannot be.  Windows exposes no
+per-session spectrum, so the mixer invents its band shape; the system output by
+contrast can be captured, so host/sysmeter.py runs a real FFT on the WASAPI
+loopback and sends the bands over.  What is drawn here is what is coming out of
+the machine -- past the EQ, past the mix.
+
+Every band height is precomputed as page masks (BAND_PAGES) with the dot
+texture anchored to the BOTTOM, so a band is a few ORs and the dots stay put as
+it moves rather than crawling with it.
 
 The column separators run from the top down to the curve and stop there, which
 is what makes the curve read as a surface with the dots beneath it.
@@ -57,31 +66,37 @@ HEAD_RULE = 0x80              # bottom row of page 0
 FLOOR_ROW = PLOT_H - 1        # the rule above the mode bar, in plot rows
 SPACING = 0
 
-DOT_X = 5                     # dot grid: 2 px dots on a 5 px pitch, both
-DOT_Y = 5                     # axes.  4 px pitch reads as a solid grey wash
-                              # at this size; 5 keeps it a field of dots.
 HANDLE = 2                    # handle half-size: a 5x5 blob, corners off
 PAD_R = 2                     # keep the value clear of the column edge
 
+# ---- the meter under the curve ---------------------------------------------
+# Styled exactly as the mixer's: 2px bands, and the run centred in its space.
+# 21 bands at pitch 6 span 122 of the 128 px, so the margin is 3 either side.
+NMETER = 21
+BAND_PITCH = 6
+BAND_W = 2
+BAND_X0 = (W - ((NMETER - 1) * BAND_PITCH + BAND_W)) // 2
+BANDX = tuple(BAND_X0 + i * BAND_PITCH for i in range(NMETER))
+PEAK_W = 4                    # the marker overhangs its band, so it reads as
+PEAK_DX = -1                  # a line rather than another dot
 
-def _fill_table():
-    """For a dotted column whose curve sits at row `top`, the page masks of the
-    fill below it.  Anchored to the bottom so the dots do not crawl."""
-    out = []
-    for top in range(PLOT_H + 1):
-        pages = bytearray(NPAGE)
-        for r in range(top, PLOT_H):
-            if ((FLOOR_ROW - r) % DOT_Y) < 2:
-                pages[r >> 3] |= 1 << (r & 7)
-        out.append(bytes(pages))
-    return tuple(out)
-
-
-FILL = _fill_table()
+FALL = 0.18                   # same ballistics as mixer.py, same 16 ms tick
+PEAK_FALL = 0.028
 
 
-def _is_dot_col(x):
-    return (x % DOT_X) < 2
+def _band_pages(h):
+    """A band h pixels tall standing on the floor, as one mask per page.  The
+    2px-on/2px-off texture is anchored to the bottom too, so the dots stay put
+    as the band grows instead of crawling."""
+    pages = bytearray(NPAGE)
+    for i in range(h):
+        if (i & 3) < 2:
+            r = FLOOR_ROW - i
+            pages[r >> 3] |= 1 << (r & 7)
+    return bytes(pages)
+
+
+BAND_PAGES = tuple(_band_pages(h) for h in range(PLOT_H + 1))
 
 
 class EqScreen:
@@ -94,29 +109,45 @@ class EqScreen:
         self.label = [''] * NBAND          # what the header shows per band
         self.handles = [W // 2] * NBAND    # column of each band's centre freq
         self.engine = True                 # False -> say so instead of lying
+        self.band = [0.0] * NMETER         # the live meter, smoothed
+        self.bpeak = [0.0] * NMETER
+        # Text strips are cached, and this is not a micro-optimisation: the
+        # header is six strings, and rebuilding them per frame measured 11.8 ms
+        # -- three times the whole meter, and the single biggest cost on the
+        # screen.  Names never change; a value's strip is rebuilt only when its
+        # text actually differs.
+        self._nstrip = tuple(gfx.text_strip(font, n, SPACING) for n in self.names)
+        self._vstrip = [None] * NBAND
         self._scratch = bytearray(NPAGE * W)
+        # The plot is two layers with very different update rates: the curve,
+        # separators and handles move only when a band does, while the meter
+        # moves 60 times a second.  Keeping the slow layer prebuilt turns a
+        # meter tick into a memcpy plus 21 bands instead of redrawing 128
+        # columns of curve as well.
+        self._static = bytearray(NPAGE * W)
         self._ys = bytearray(W)
         for i in range(NBAND):
             self.set_label(i)
 
     # ---- header ----------------------------------------------------------
     def set_label(self, i, text=None):
-        """The cell text for band i.  Defaults to name + gain, which is what
-        the resting screen shows; pass text to show a different parameter
-        while it is being edited."""
+        """The cell text for band i.  Defaults to the gain, which is what the
+        resting screen shows; pass text to show a different parameter while it
+        is being edited."""
         if text is None:
             text = '%+.1f' % self.gains[i]
+        if text == self.label[i] and self._vstrip[i] is not None:
+            return
         self.label[i] = text
+        self._vstrip[i] = gfx.text_strip(self.font, text, SPACING)
 
     def draw_head(self):
         o = PAGE_HEAD * W
         for k in self._ink:
             self.planes[k][o:o + W] = _ZERO
         for c in range(NBAND):
-            nm = self.names[c]
-            val = self.label[c]
-            nw, nbuf = gfx.text_strip(self.font, nm, SPACING)
-            vw, vbuf = gfx.text_strip(self.font, val, SPACING)
+            nw, nbuf = self._nstrip[c]
+            vw, vbuf = self._vstrip[c]
             x0 = COLX[c]
             # name hard left, value hard right: the value is what changes, and
             # a centred pair would jitter sideways every time it did.
@@ -139,44 +170,58 @@ class EqScreen:
         for k in self._ink:
             self.planes[k][idx] |= val
 
-    # ---- the plot --------------------------------------------------------
-    def draw_plot(self, ys):
-        """`ys` is one curve row per column, 0 at the top -- eqcurve.heights().
+    # ---- the meter -------------------------------------------------------
+    def update(self, levels):
+        """Feed one level per band (0..1) and advance the ballistics a step.
+        Rise instantly, fall gradually, and let the peak marker fall ~6x slower
+        so it detaches and settles -- exactly the mixer's meter."""
+        n = len(levels)
+        for i in range(NMETER):
+            v = levels[i] if i < n else 0.0
+            if v < 0.0:
+                v = 0.0
+            elif v > 1.0:
+                v = 1.0
+            x = self.band[i]
+            x = v if v >= x else x + (v - x) * FALL
+            self.band[i] = x
+            p = self.bpeak[i]
+            self.bpeak[i] = x if x >= p else p + (x - p) * PEAK_FALL
 
-        Builds the whole band in a scratch buffer and slice-copies it, so there
-        is no clear pass and no per-pixel work."""
-        sc = self._scratch
+    # ---- the plot --------------------------------------------------------
+    def set_curve(self, ys):
+        """Rebuild the slow layer: the response curve, the separators that stop
+        against it, the band handles and the floor.  Only a band change moves
+        any of this, so it is built once per change rather than per frame.
+
+        `ys` is one curve row per column, 0 at the top -- eqcurve.heights()."""
+        st = self._static
         blank = _ZERO[:W]
         for p in range(NPAGE):
-            sc[p * W:(p + 1) * W] = blank
+            st[p * W:(p + 1) * W] = blank
 
         prev = ys[0]
         for x in range(W):
             y = ys[x]
             if y > FLOOR_ROW:
                 y = FLOOR_ROW
-            if _is_dot_col(x):
-                m = FILL[y]
-                for p in range(NPAGE):
-                    if m[p]:
-                        sc[p * W + x] |= m[p]
-            # the curve itself: a segment between this column and the last, so
-            # a steep slope stays a line instead of a dotted diagonal
+            # a segment between this column and the last, so a steep slope
+            # stays a line instead of a dotted diagonal
             lo, hi = (prev, y) if prev <= y else (y, prev)
             for r in range(lo, hi + 1):
-                sc[(r >> 3) * W + x] |= 1 << (r & 7)
+                st[(r >> 3) * W + x] |= 1 << (r & 7)
             prev = y
 
-        # separators: from the top of the plot down to the curve, so the curve
-        # reads as a surface they stop against
+        # separators run from the top down to the curve and stop, which is what
+        # makes it read as a surface with the meter beneath
         for sx in SEPX:
             end = ys[sx]
             if end > FLOOR_ROW:
                 end = FLOOR_ROW
             for r in range(0, end + 1):
-                sc[(r >> 3) * W + sx] |= 1 << (r & 7)
+                st[(r >> 3) * W + sx] |= 1 << (r & 7)
 
-        for i in range(NBAND):                     # handles, on the curve
+        for i in range(NBAND):
             hx = self.handles[i]
             hy = ys[hx] if 0 <= hx < W else 0
             for dx in range(-HANDLE, HANDLE + 1):
@@ -190,10 +235,49 @@ class EqScreen:
                         continue
                     r = hy + dy
                     if 0 <= r <= FLOOR_ROW:
-                        sc[(r >> 3) * W + x] |= 1 << (r & 7)
+                        st[(r >> 3) * W + x] |= 1 << (r & 7)
 
-        for x in range(W):                         # the floor
-            sc[(FLOOR_ROW >> 3) * W + x] |= 1 << (FLOOR_ROW & 7)
+        o = (FLOOR_ROW >> 3) * W
+        b = 1 << (FLOOR_ROW & 7)
+        for x in range(W):
+            st[o + x] |= b
+
+    def draw_plot(self, ys=None):
+        """Composite the live meter under the prebuilt curve layer.  Pass `ys`
+        only when the curve has moved."""
+        if ys is not None:
+            self.set_curve(ys)
+        sc = self._scratch
+        st = self._static
+        sc[:] = st
+
+        # the meter, drawn into the copy; the curve is already above it
+        for i in range(NMETER):
+            h = int(self.band[i] * PLOT_H + 0.5)
+            if h > PLOT_H:
+                h = PLOT_H
+            bx = BANDX[i]
+            if h:
+                pages = BAND_PAGES[h]
+                for p in range(NPAGE):
+                    m = pages[p]
+                    if m:
+                        o = p * W + bx
+                        for x in range(o, o + BAND_W):
+                            sc[x] |= m
+            pk = self.bpeak[i]
+            if pk > 0.0:
+                d = int(pk * PLOT_H + 0.5)
+                if d < 1:
+                    d = 1
+                elif d > PLOT_H:
+                    d = PLOT_H
+                r = FLOOR_ROW - d + 1
+                o = (r >> 3) * W + bx + PEAK_DX
+                m = 1 << (r & 7)
+                lo = 0 if o < 0 else o
+                for x in range(lo, o + PEAK_W):
+                    sc[x] |= m
 
         mv = memoryview(sc)
         for p in range(NPAGE):
