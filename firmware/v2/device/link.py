@@ -18,10 +18,16 @@ Verbs used by the mixer screen (V1 verbs kept, `meter` added for V2):
     H->D   label <ch> <text>      column name, ch 0-2
            level <ch> <0..100>    volume; ch 3 is the system/master
            mute  <ch> <0|1>
-           meter <v0> <v1> <v2>   live per-app levels, 0..100  (V2)
+           meter <v0> <v1> <v2>   live per-column levels, 0..100  (V2)
+           apps  <A,B,C>          apps with a live session; the app switcher's
+                                  list, comma separated because process names
+                                  can contain spaces  (V2)
+           ameter <v0> <v1> ...   one level per entry in that list  (V2)
     D->H   naub proto=2 ...       banner, on connect
            vol   <ch> <0..100>    a knob moved
            mute  <ch> <0|1>       a knob was held
+           pick  <ch> <APP>       the switcher assigned an app to a column;
+                                  the host pins it there  (V2)
 """
 import usb_cdc
 

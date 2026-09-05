@@ -17,9 +17,12 @@ Protocol (PROTOCOL.md; `meter` is the V2 addition):
     ->  label <ch> <text>     column name, ch 0-2
     ->  level <ch> <0..100>   volume; ch 3 is the system/master
     ->  mute  <ch> <0|1>
-    ->  meter <v0> <v1> <v2>  live levels, sent at --rate Hz
+    ->  meter <v0> <v1> <v2>  column levels, sent at --rate Hz
+    ->  apps  <A,B,C>         every app with a live session (the switcher list)
+    ->  ameter <v0> <v1> ...  one level per app in that list, at --rate Hz
     <-  vol   <ch> <0..100>   a knob moved
     <-  mute  <ch> <0|1>      a knob was held
+    <-  pick  <ch> <APP>      the switcher assigned an app to a column
 """
 import re
 import sys
@@ -86,7 +89,9 @@ class Bridge:
         self.ser = ser
         self.rate = rate
         self.src = appmeter.AppMeters()
-        self.keys = []
+        self.keys = []            # what each column shows
+        self.apps = []            # every app with a live session
+        self.pinned = [None] * NCOL   # columns the device chose by hand
         self.vol = [None] * (NCOL + 1)
         self.muted = [None] * NCOL
         self._rx = b''
@@ -97,8 +102,34 @@ class Bridge:
         except serial.SerialTimeoutException:
             pass
 
+    def columns(self):
+        """Which app each column shows.  A column the user assigned from the
+        switcher stays put; the rest track the most active sessions.  Without
+        the pinning, a hand-picked column would be overwritten the moment the
+        busiest three changed."""
+        auto = [k for k in self.src.top(NCOL * 2)
+                if k and k not in self.pinned]
+        out = []
+        for i in range(NCOL):
+            if self.pinned[i]:
+                out.append(self.pinned[i])
+            else:
+                out.append(auto.pop(0) if auto else '')
+        return out
+
+    def push_apps(self, force=False):
+        """The switcher's list: everything making noise, in full.  Sent as one
+        comma-separated line because process names can contain spaces."""
+        apps = self.src.active()
+        if apps == self.apps and not force:
+            return False
+        self.apps = apps
+        self.send('apps %s' % ','.join(k.upper() for k in apps))
+        print('apps: %s' % (', '.join(apps) or '(none)'))
+        return True
+
     def push_names(self, force=False):
-        keys = self.src.top(NCOL)
+        keys = self.columns()
         if keys == self.keys and not force:
             return False
         self.keys = keys
@@ -142,8 +173,17 @@ class Bridge:
                 self.src.set_mute(self.keys[ch], bool(m))
                 self.muted[ch] = m
             print('  mute %d -> %d' % (ch, m))
+        elif t[0] == 'pick' and len(t) >= 3:
+            ch = int(t[1])
+            key = ' '.join(t[2:]).lower()
+            if 0 <= ch < NCOL:
+                self.pinned[ch] = key
+                print('  column %d pinned to %s' % (ch, key))
+                self.push_names(force=True)
+                self.push_state()
         elif t[0] == 'naub':
             print('  device: %s' % line)
+            self.push_apps(force=True)
             self.push_names(force=True)
             self.push_state()
 
@@ -159,6 +199,7 @@ class Bridge:
 
     def run(self, seconds=0.0):
         self.send('hello')
+        self.push_apps(force=True)
         self.push_names(force=True)
         self.push_state()
         period = 1.0 / self.rate
@@ -178,6 +219,10 @@ class Bridge:
                 lv = self.src.levels(self.keys)
                 self.send('meter %d %d %d' % tuple(
                     int(min(1.0, x) * 100 + 0.5) for x in lv))
+                if self.apps:      # the switcher meters whichever app it shows
+                    self.send('ameter %s' % ' '.join(
+                        '%d' % int(min(1.0, x) * 100 + 0.5)
+                        for x in self.src.levels(self.apps)))
                 sent += 1
                 if now >= next_log:
                     next_log = now + 1.0
@@ -188,6 +233,7 @@ class Bridge:
             if now >= next_scan:
                 next_scan = now + RESCAN_S
                 self.src.refresh()
+                self.push_apps()
                 self.push_names()
                 self.push_state()
             time.sleep(0.002)

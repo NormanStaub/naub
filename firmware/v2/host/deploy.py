@@ -1,6 +1,6 @@
 """Deploy a demo (or your own code.py) to the naub V2 CIRCUITPY drive.
 
-    python deploy.py ball|gray|icons|switch|mixer [--drive K:] [--port COM9] [--no-watch]
+    python deploy.py ball|gray|icons|mixer [--drive K:] [--port COM9] [--no-watch]
     python deploy.py path\\to\\my_code.py
 
 Order matters: support modules first, code.py LAST — every copy triggers a
@@ -17,12 +17,11 @@ DEMOS = os.path.normpath(os.path.join(HERE, '..', 'demos'))
 # boot.py first: it only takes effect after a power cycle, and copying it is
 # harmless for the demos that do not use the data port.
 LIBS = ('boot.py', 'gfx.py', 'ccfont.py', 'st7565.py', 'naubhw.py', 'link.py',
-        'carousel.py', 'mixer.py')
+        'mixer.py', 'drawer.py')
 DEMO_MAP = {
     'ball':   ('demo_ball.py', ()),
     'gray':   ('demo_gray_modes.py', ('graybars.py', 'graygrad.py')),
     'icons':  ('demo_app_icons.py', ('appicons.py',)),
-    'switch': ('demo_switcher.py', ('switcher_data.py',)),
     'mixer':  ('demo_mixer.py', ('switcher_data.py',)),
 }
 

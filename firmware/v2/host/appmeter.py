@@ -102,14 +102,21 @@ class AppMeters:
                 self._seen.append(sess.key)
         self._by_key = by_key
 
+    def active(self):
+        """Every app with a live audio session right now, longest-established
+        first.  This is the app switcher's list, and its counter is len() of
+        it -- so it must NOT be padded or truncated."""
+        live = [k for k in self._by_key if self._by_key[k].active]
+        out = [k for k in self._seen if k in live]
+        out += [k for k in live if k not in out]
+        return out
+
     def top(self, n):
         """Exactly n apps worth showing: currently rendering audio first, then
         ones that have played before (so a paused player keeps its column), then
         anything else holding a session.  Padded with '' — an empty column is a
         legitimate state, not an error."""
-        live = [k for k in self._by_key if self._by_key[k].active]
-        out = [k for k in self._seen if k in live]
-        out += [k for k in live if k not in out]
+        out = self.active()
         out += [k for k in self._seen if k not in out and k in self._by_key]
         out += [k for k in self._by_key if k not in out]
         out = out[:n]

@@ -11,17 +11,16 @@ device/   modules that live on the CIRCUITPY drive (pure CircuitPython)
   link.py      host<->device line protocol over the data port
   naubhw.py    board wiring: display, backlight, 4 encoders, 9 switches
   gfx.py       1-bit page framebuffer + text/icon drawing (runs on PC too)
-  carousel.py  app-switcher carousel widget (pure Python -> previews on PC)
   mixer.py     the mixer screen: 3 columns, volume bars, 8-band dot meters
+  drawer.py    the app switcher: a dropdown over the meters (pure Python too)
   ccfont.py    C&C Red Alert font (TINY h8 full ASCII, SML h16, BIG digits h27)
 demos/    ready-to-flash examples (each becomes code.py) + generated data
-  demo_mixer.py       the mixer screen + carousel picker  <- the main UI
-  demo_switcher.py    scrollable app switcher   <- the first real UI screen
+  demo_mixer.py       the mixer screen + the app-switcher dropdown  <- the UI
   demo_app_icons.py   open-app icons in 4-plane FRC grayscale (static screen)
   demo_gray_modes.py  8 grayscale techniques on one knob (the experiment)
   demo_ball.py        bouncing ball, dirty-span updates (refresh/motion test)
 host/     PC-side tools (Python 3 + Pillow, pyserial optional)
-  deploy.py       python deploy.py mixer|switch|icons|gray|ball -> copies to K:, watches serial
+  deploy.py       python deploy.py mixer|icons|gray|ball -> copies to K:, watches serial
   frc.py          THE reusable piece: ink levels / PIL image -> FRC bitplanes
   naub_bridge.py  streams real audio to the device; applies knob moves back
   appmeter.py     per-app audio level / volume / mute from WASAPI
@@ -31,7 +30,7 @@ host/     PC-side tools (Python 3 + Pillow, pyserial optional)
   gen_grad.py     regenerates demos/graygrad.py (gradient planes)
   gen_font.py     TTF -> ccfont.py (extract repo-root c_c_red_alert_inet.zip
                   into host/font_src/ first)
-  preview_mixer.py / preview_switcher.py / preview_gray.py    previews
+  preview_mixer.py / preview_drawer.py / preview_gray.py      previews
   draw_logos.py / gen_icon.py                                 binary icons
 ```
 
@@ -68,12 +67,17 @@ previews are pixel-exact (WYSIWYG workflow — always preview before flashing).
 | full-frame `show_pages()` @ 4 MHz | ~337 fps |
 | full-frame `show_pages()` @ 8 MHz | ~554 fps |
 | partial `span()` (16px sprite, 2 pages) @ 8 MHz | ~2200 updates/s |
-| `carousel.render()` (5 icons, 4 planes) | 1.9 ms (~1 frame) |
-| `carousel.set_focus()` (16px label via `gfx.text`) | 16 ms (~2 gray cycles) |
-| free RAM with the switcher loaded (8 apps, 3 tiers) | 371 kB |
+| `drawer.draw_shelf()` (4 icons, 4 planes) | 1.8 ms |
+| `drawer.compose()` open / mid-slide | 0.41 ms / 4.2 ms |
+| `mixer.draw_dots()` (24 bands + peak markers) | 1.2 ms |
+| free RAM with mixer + switcher loaded (8 apps, 2 tiers) | 360 kB |
 
 Keep hot loops allocation-free (prebuilt page commands, `make_views()`
-memoryviews, reused buffers) — GC pauses show up as visible flicker.
+memoryviews, reused buffers) — GC pauses show up as visible flicker. The trap
+worth naming: **a bytearray slice on the right of an assignment allocates a
+copy.** `fb[o:o+128] = pan[p*128:(p+1)*128]` measured 4.6 ms for one drawer
+frame; hoisting the right-hand side into prebuilt memoryviews took the same
+work to 0.41 ms. Slice the *destination*, never the source.
 
 ## Grayscale: 4-plane FRC (the picked recipe)
 
@@ -124,7 +128,7 @@ what that app is playing; a footer with the preset and system volume.
 ```
 
 Knobs: the three top knobs are the three columns (turn = volume, click = open
-the carousel to pick that column's app, hold 0.6 s = mute); the lower-right
+the app-switcher dropdown for that column, hold 0.6 s = mute); the lower-right
 knob is system volume.
 
 ### What Windows can and cannot tell us
@@ -179,25 +183,24 @@ Being binary means **one framebuffer suffices** (`Mixer(font, n=1)`, the
 default): nothing to cycle, so no FRC shimmer at all, and a quarter of the
 drawing work. Measured **391 fps — i.e. 391 Hz of real refresh**, against
 100 Hz of gray cycle when the same screen was drawn across 4 planes. Pass
-`n=4` if you reintroduce gray elements. The carousel still uses 4 planes, so
-`demo_mixer.py` re-reads `len(views)` whenever it switches screens.
+`n=4` if you reintroduce gray elements. The switcher's icons are still FRC
+grayscale, so `demo_mixer.py` re-reads `len(views)` whenever the dropdown opens
+or closes: 1 plane for the mixer, 4 while the drawer is out.
 
 ### Why it is cheap to animate
 
-Same page-grid discipline as the carousel:
-
-- dot rows sit **2 per page** (2 px dot, 4 px pitch), so lighting one is a
-  single `|=` on a single byte — 8 dots x 10 rows x 3 columns with no
-  per-pixel calls and no cross-page shifting;
+- every possible band height is precomputed as page byte masks (`BAND_PAGES`),
+  so drawing a band is a few `|=` into a per-column scratch buffer that is
+  slice-copied straight into the framebuffer;
 - names render once into a one-page `gfx.text_strip()` and the **marquee is a
   byte-slice window** into it, so scrolling a long name is free — this is why
   `ccfont.TINY` is exactly 8 px tall;
-- **age is drawn as gray**: older trace rows go into fewer FRC planes
-  (`mixer._KEEP`), and a muted column's bar drops to half duty. Same trick as
-  the carousel's unfocused icons, no extra pixel data.
+- the scratch overwrites every byte of a column, so there is no clear pass, and
+  the separators sit in the 1 px gaps *between* columns where the hot path
+  never touches them — chrome is drawn once, at construction.
 
-Measured with the trace running at ~11 Hz: **516 fps** (vs 552 idle) — the
-whole animated screen costs about 7%.
+A full meter redraw (24 bands + peak markers) costs 1.2 ms against a 2.7 ms
+single-plane frame, and it only runs on the 16 ms tick.
 
 `ccfont.TINY` is rasterized at size 11 and cropped from row 3, giving 6 px caps
 inside one page, and is drawn with `spacing=0` (`mixer.SPACING`). Rendering at
@@ -233,54 +236,68 @@ python host/naub_bridge.py --ports   # if it cannot find the data port
   `location='1-10.3:x.2'`, while other setups tag the hwid `MI_00`/`MI_02`.
   `naub_bridge.find_ports()` handles both and otherwise just takes the lowest
   interface as console, highest as data.
-- **Protocol** is V1's line protocol (PROTOCOL.md) plus one verb:
-  `meter <v0> <v1> <v2>`, the live per-app levels, 0..100, pushed at `--rate`.
-  Knob moves come back as `vol <ch> <0..100>` and `mute <ch> <0|1>`; channel 3
-  is the system/master, matching V1's channel numbering.
-- **The host owns the column names** while connected — it picks the three most
-  active sessions. The carousel picker still works, but a manual choice is
-  overwritten next time the host's top three changes. Worth revisiting.
+- **Protocol** is V1's line protocol (PROTOCOL.md §11) plus four verbs:
+  `meter <v0> <v1> <v2>` (column levels), `apps <A,B,C>` (every app with a live
+  session — the switcher's list) and `ameter <v0> <v1> ...` (one level per entry
+  in it), all pushed at `--rate`; `pick <ch> <APP>` comes back when the switcher
+  assigns one. Knob moves still come back as `vol <ch> <0..100>` and
+  `mute <ch> <0|1>`; channel 3 is the system/master, matching V1.
+- **The host owns the column names, except where you pinned them.** It fills
+  the columns from the most active sessions, but a `pick` pins that column and a
+  pinned column is never reassigned by the host's churn
+  (`naub_bridge.Bridge.columns()`). This was the open question left by the
+  previous pass; the switcher is what closed it.
 
-## The app switcher (`carousel.py` + `demo_switcher.py`)
+## The app switcher (`drawer.py`)
 
-The first real UI screen: a shelf of app icons, the focused one large and
-black, its neighbours smaller and grayer, scrolled with the top-left knob.
+Not a separate screen: a **dropdown** that slides down out of one column's name
+slot and covers the meter band. The volume bars and the footer never move, so
+you never lose your place — and the column being edited is the one whose name
+and rule are *missing*.
 
 ```
-    [ic]   [  ICON  ]   [ic]      icons, bottom-aligned on page 4
-           . . o . . .            position rail   (page 5)
-              CHROME              app name        (pages 6-7)
+| ####----- | ######--- | ########## |  volume bars stay put   page 0
+|           |  MUSIC    |  SPOTIFY   |  edited column blanked, rule gapped
+|        o o O o o                   |  scroll counter         panel page 0
+|   [ic]    [ ICON ]    [ic]         |  icon shelf             panel pages 1-3
+|  SPOTIFY  .. .. .. .. ..     |     |  name + level meter     panel page 4
+| APP CTRL  |||  SYS. ############   |  footer stays put       page 7
 ```
 
-Two decisions make it cheap enough to animate underneath the FRC cycling:
+- **The counter is honest.** One ring per app with a *live audio session*
+  (`appmeter.active()`), filled at the current selection. Nothing playing means
+  no rings — the dropdown still opens (a dead gesture is worse than an empty
+  shelf), it just has nothing to assign.
+- **The bottom row meters the selection, not the column.** It follows the
+  scroll, so you see what you are about to assign. Same fast-attack /
+  slow-release ballistics as the mixer's bands, with a peak tick on the leading
+  edge.
+- **Page-aligned size tiers.** `TIERS = ((24,1),(16,2))` — both a multiple of 8
+  and bottom-aligned on the same floor, so an icon is `fb[o:o+w] = src[s:s+w]`
+  with no bit shifting. The tier comes from the *fractional* distance to the
+  focus, so easing `pos` toward an integer target produces the zoom for free.
+- **Apps with no icon get a placeholder** — a rounded frame with the app's
+  initial. The session list and the icon catalogue come from different places
+  (apps making noise vs. apps with a window), so a mismatch is normal.
+- **The footer reads `APP CTRL`** while the drawer is out and `PRESET 1` when
+  it is not, because that is what the buttons do right now.
 
-- **Page-aligned size tiers.** `TIERS = ((40,0),(32,1),(24,2))` — every icon
-  size is a multiple of 8 sitting on a page boundary, so drawing one is
-  `fb[o:o+w] = src[s:s+w]`, no bit shifting. Horizontal position is free
-  either way (x *is* the byte index), so the scroll is a pure byte copy:
-  1.9 ms for a whole 5-icon, 4-plane frame.
-- **Dimming by plane subset.** An unfocused icon is drawn into only 3 (or 2)
-  of the 4 FRC planes, which lowers its duty and therefore its gray. The
-  depth cue costs no extra pixel data — see `_KEEP` / `ink_of()`.
-
-Tier and ink are chosen from the *fractional* distance to the focus, so
-easing `pos` toward an integer target produces the zoom for free. Measured
-on hardware: 552 fps at rest, 517 fps while actively scrolling.
-
-`gfx.text` is the one slow thing (16 ms — per-pixel Python), so
-`demo_switcher.py` only redraws the name once the scroll is nearly settled
-(`SETTLED`); redrawing it per detent would stall a fast spin.
+The panel composites over the live mixer frame: rows above the sliding edge are
+the panel, rows below it are still the running meters, merged byte-wise on the
+one page the edge cuts through. Measured **0.41 ms** to compose an open panel
+and 4.2 ms on the frames where the edge is mid-page — so ~130 Hz of gray cycle
+when open (the `show_pages` ceiling is 142 Hz) and ~77 Hz during the slide.
 
 Regenerate the icons for whatever you have open, then flash:
 
 ```
-python host/gen_switcher.py        # -> demos/switcher_data.py (~41 kB, 12.8 kB of pixels)
-python host/preview_switcher.py    # WYSIWYG check; --anim for the transition
-python host/deploy.py switch
+python host/gen_switcher.py      # -> demos/switcher_data.py (11 kB, 3.3 kB of pixels)
+python host/preview_drawer.py    # WYSIWYG check; --live drives it from real audio
+python host/deploy.py mixer
 ```
 
-`carousel.py` imports nothing but `gfx`, so `preview_switcher.py` drives the
-exact code the device runs — always preview before flashing.
+`drawer.py` imports nothing but `gfx`, so `preview_drawer.py` drives the exact
+code the device runs — always preview before flashing.
 
 ## Motion
 

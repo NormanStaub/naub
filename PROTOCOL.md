@@ -219,3 +219,39 @@ ignores `eq` (the menu still opens; nothing is applied).
 **Compatibility.** `eq`/`eqset` are additive; unknown verbs are ignored (§1), so
 a proto=1 host and a proto=2 device (or vice-versa) interoperate — the EQ feature
 is simply inert on whichever side lacks it.
+
+---
+
+## 11. V2 mixer screen (proto=2)
+
+The V2 panel is a 128×64 LCD showing three app columns at once rather than one
+channel at a time, so it needs *continuous* level data and its own notion of
+"which apps exist". These verbs are additive; a proto=1 host and a V2 device
+interoperate with the meters simply sitting still (§1: unknown verbs are
+ignored). Implemented in `firmware/v2/device/link.py` and
+`firmware/v2/host/naub_bridge.py`.
+
+| Message | Dir | Meaning |
+|---|---|---|
+| `meter <v0> <v1> <v2>` | H→D | Live level for each of the three **columns**, 0–100, pushed continuously (50 Hz by default). Purely a display feed — it never affects audio and is never echoed. |
+| `apps <A,B,C>` | H→D | Every app with a **live audio session**, in the host's preference order — the app switcher's list, and what its counter counts. **Comma** separated, because process names can contain spaces. An empty list is legal and means nothing is playing. |
+| `ameter <v0> <v1> …` | H→D | One level per entry of the last `apps` list, 0–100, pushed at the same rate. The switcher meters whichever entry is under the scroll. |
+| `pick <ch> <APP>` | D→H | The user assigned `<APP>` to column `<ch>` from the switcher. The host **pins** that column: it stops reassigning it as the busiest sessions churn. |
+
+**Why levels are a separate verb from `level`.** `level` is a *volume* (where
+the knob sits); `meter`/`ameter` are *amplitudes* (what is coming out). They
+move at completely different rates and only the first is state.
+
+**Level scaling.** Values are `peak ** 0.45 × 100` — WASAPI peak is linear
+amplitude, and speech and music sit low enough in that range to look dead on a
+small panel. `appmeter.AppMeters(curve=1.0)` sends raw amplitude instead.
+
+**Spectrum is not available.** WASAPI exposes per-session *peak*
+(`IAudioMeterInformation`) but no per-session tap — loopback captures the
+endpoint mix. The device's 8-band display is therefore a fake spread of the one
+amplitude per app, generated on-device; the wire only ever carries one number
+per source.
+
+**Who owns the column names.** The host, except where the device pinned one
+with `pick`. Without the pin, a hand-picked column would be overwritten the
+next time the most-active-sessions list changed.
