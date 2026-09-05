@@ -1,0 +1,91 @@
+"""Render the mixer screen on the PC with the same mixer.py the device runs.
+
+    python preview_mixer.py            # a few states side by side
+    python preview_mixer.py --live     # drive it from this PC's real audio
+
+--live polls the actual per-app WASAPI peak meters (appmeter.py), so you can
+see the real trace before any of it is on the device.
+"""
+import _paths
+import math, os, random, sys, time
+from PIL import Image
+import ccfont, frc, gfx, mixer
+
+SCALE = 4
+GAP = 6
+
+
+def demo_states():
+    m = mixer.Mixer(ccfont.TINY)
+    m.set_name(0, 'CHROME')
+    m.set_name(1, 'MUSIC')
+    m.set_name(2, 'SPOTIFY')
+    m.vol = [0.45, 0.70, 1.0]
+    m.sysvol = 0.62
+    # a plausible 10-sample history: two apps playing, one silent
+    random.seed(7)
+    for _ in range(mixer.DOT_ROWS):
+        m.push([0.35 + 0.45 * random.random(), 0.55 + 0.4 * random.random(), 0.0])
+    m.render()
+    yield m, 'two apps playing'
+
+    m.mute[1] = True
+    m.render()
+    yield m, 'MUSIC muted'
+
+    m.mute[1] = False
+    m.set_name(1, 'SUPERNOTE_PARTNER')      # long -> marquee
+    for _ in range(12):
+        m.marquee()
+    m.render()
+    yield m, 'long name, scrolled'
+
+    for _ in range(mixer.DOT_ROWS):
+        m.push([0.0, 0.0, 0.0])
+    m.render()
+    yield m, 'all silent'
+
+
+def live():
+    import appmeter
+    src = appmeter.AppMeters()
+    m = mixer.Mixer(ccfont.TINY)
+    names = src.top(mixer.NCOL)
+    for i, nm in enumerate(names):
+        m.set_name(i, nm.upper())
+    m.sysvol = src.system_volume()
+    print('watching %r -- ctrl-C to stop' % (names,))
+    shots = []
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < 4.0:
+        lv = src.levels(names)
+        m.push(lv)
+        for i, nm in enumerate(names):
+            m.vol[i] = src.volume(nm)
+        m.marquee()
+        m.render()
+        shots.append((frc.avg_image(m.planes, SCALE), '%.1fs %r' % (
+            time.monotonic() - t0, [round(x, 2) for x in lv])))
+        time.sleep(0.35)
+    return shots[-6:]
+
+
+def main(argv):
+    if '--live' in argv:
+        shots = live()
+    else:
+        shots = [(frc.avg_image(m.planes, SCALE), tag) for m, tag in demo_states()]
+    for _, tag in shots:
+        print('  ', tag)
+    w, h = gfx.W * SCALE, gfx.H * SCALE
+    canvas = Image.new('L', (w, (h + GAP) * len(shots) - GAP), 128)
+    for i, (im, _) in enumerate(shots):
+        canvas.paste(im, (0, i * (h + GAP)))
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       'mixer_preview.png')
+    canvas.save(out)
+    print('wrote %s (%d frames)' % (out, len(shots)))
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

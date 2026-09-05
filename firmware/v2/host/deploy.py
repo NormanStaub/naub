@@ -1,6 +1,6 @@
 """Deploy a demo (or your own code.py) to the naub V2 CIRCUITPY drive.
 
-    python deploy.py ball|gray|icons|switch [--drive K:] [--port COM9] [--no-watch]
+    python deploy.py ball|gray|icons|switch|mixer [--drive K:] [--port COM9] [--no-watch]
     python deploy.py path\\to\\my_code.py
 
 Order matters: support modules first, code.py LAST — every copy triggers a
@@ -14,12 +14,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEVICE = os.path.normpath(os.path.join(HERE, '..', 'device'))
 DEMOS = os.path.normpath(os.path.join(HERE, '..', 'demos'))
 
-LIBS = ('gfx.py', 'ccfont.py', 'st7565.py', 'naubhw.py', 'carousel.py')
+LIBS = ('gfx.py', 'ccfont.py', 'st7565.py', 'naubhw.py', 'carousel.py',
+        'mixer.py')
 DEMO_MAP = {
     'ball':   ('demo_ball.py', ()),
     'gray':   ('demo_gray_modes.py', ('graybars.py', 'graygrad.py')),
     'icons':  ('demo_app_icons.py', ('appicons.py',)),
     'switch': ('demo_switcher.py', ('switcher_data.py',)),
+    'mixer':  ('demo_mixer.py', ('switcher_data.py',)),
 }
 
 

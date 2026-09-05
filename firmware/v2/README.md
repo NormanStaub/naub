@@ -10,8 +10,10 @@ device/   modules that live on the CIRCUITPY drive (pure CircuitPython)
   naubhw.py    board wiring: display, backlight, 4 encoders, 9 switches
   gfx.py       1-bit page framebuffer + text/icon drawing (runs on PC too)
   carousel.py  app-switcher carousel widget (pure Python -> previews on PC)
-  ccfont.py    C&C Red Alert bitmap font (SML full ASCII h16, BIG digits h27)
+  mixer.py     the mixer screen: 3 columns, volume bars, scrolling dot traces
+  ccfont.py    C&C Red Alert font (TINY h8 full ASCII, SML h16, BIG digits h27)
 demos/    ready-to-flash examples (each becomes code.py) + generated data
+  demo_mixer.py       the mixer screen + carousel picker  <- the main UI
   demo_switcher.py    scrollable app switcher   <- the first real UI screen
   demo_app_icons.py   open-app icons in 4-plane FRC grayscale (static screen)
   demo_gray_modes.py  8 grayscale techniques on one knob (the experiment)
@@ -19,6 +21,7 @@ demos/    ready-to-flash examples (each becomes code.py) + generated data
 host/     PC-side tools (Python 3 + Pillow, pyserial optional)
   deploy.py       python deploy.py ball|gray|icons|switch -> copies to K:, watches serial
   frc.py          THE reusable piece: ink levels / PIL image -> FRC bitplanes
+  appmeter.py     per-app audio level / volume / mute from WASAPI
   appscan.py      enumerate open apps + extract their icons (Windows)
   gen_switcher.py regenerates demos/switcher_data.py (movable per-tier icons)
   gen_appicons.py regenerates demos/appicons.py (one baked screen)
@@ -91,6 +94,73 @@ while True:
 `frc.encode(..., ox=, oy=, planes=)` composites into existing planes with
 screen-global dither coordinates, so regions tile seamlessly — build mixed
 screens from parts.
+
+## The mixer screen (`mixer.py` + `demo_mixer.py`)
+
+Three app columns, each with a volume bar, a name, and a dot trace of what that
+app is actually playing; a footer with the preset and system volume.
+
+```
+| ####----- | ######--- | ########## |  volume bar    page 0
+| CHROME    | MUSIC     | SPOTIFY    |  name, marquee page 1
+| oooo      | ooooooo   |            |  newest sample pages 2-6
+| ooooo     | ooooo     |            |    |  scrolls down,
+| ooo       | oooooo    |            |    v  fading as it ages
+| PRESET 1  |||  SYS. ############   |  footer        page 7
+```
+
+Knobs: the three top knobs are the three columns (turn = volume, click = open
+the carousel to pick that column's app, hold 0.6 s = mute); the lower-right
+knob is system volume.
+
+### What Windows can and cannot tell us
+
+- **Per-app level: yes.** Every WASAPI session exposes
+  `IAudioMeterInformation::GetPeakValue()` — a real amplitude trace of that app
+  alone, at ~0.05 ms per session, so 100 Hz polling is free. pycaw does not
+  wrap the interface; `host/appmeter.py` declares it.
+- **Per-app spectrum: no.** There is no per-session tap — WASAPI loopback
+  captures the endpoint *mix*. A per-app FFT would need code injected into
+  every process. Hence a scrolling **amplitude** trace, not a frequency
+  analyzer.
+
+Peak is linear amplitude, which looks dull on a small panel because speech and
+music sit low in the range, so `appmeter.levels()` applies a gentle curve
+(`curve=0.45`); pass `1.0` for raw.
+
+### Why it is cheap to animate
+
+Same page-grid discipline as the carousel:
+
+- dot rows sit **2 per page** (2 px dot, 4 px pitch), so lighting one is a
+  single `|=` on a single byte — 8 dots x 10 rows x 3 columns with no
+  per-pixel calls and no cross-page shifting;
+- names render once into a one-page `gfx.text_strip()` and the **marquee is a
+  byte-slice window** into it, so scrolling a long name is free — this is why
+  `ccfont.TINY` is exactly 8 px tall;
+- **age is drawn as gray**: older trace rows go into fewer FRC planes
+  (`mixer._KEEP`), and a muted column's bar drops to half duty. Same trick as
+  the carousel's unfocused icons, no extra pixel data.
+
+Measured with the trace running at ~11 Hz: **516 fps** (vs 552 idle) — the
+whole animated screen costs about 7%.
+
+`ccfont.TINY` is rasterized at size 11 and cropped from row 3, giving 6 px caps
+inside one page, and is drawn with `spacing=0` (`mixer.SPACING`). Rendering at
+a size whose *metrics* are 8 rows yields only 4 px caps (illegible); going
+bigger pushes most app names past the 40 px column and forces them all to
+marquee.
+
+```
+python host/appmeter.py             # see the live per-app levels
+python host/preview_mixer.py        # WYSIWYG check; --live drives it from real audio
+python host/deploy.py mixer
+```
+
+**Levels on the device are still simulated.** The real ones need the host to
+push data, which is what the V1 USB CDC *data* port is for (`firmware/boot.py`
++ PROTOCOL.md). V2 has no `boot.py` yet, so only the read-only console exists;
+adding it and power-cycling is the next step.
 
 ## The app switcher (`carousel.py` + `demo_switcher.py`)
 

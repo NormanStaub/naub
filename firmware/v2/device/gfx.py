@@ -88,6 +88,37 @@ def text(fb, font, s, x, y, on=True, spacing=1):
         cx += w + spacing
     return cx - x - spacing
 
+def text_strip(font, s, spacing=1):
+    """Render text into a one-page-tall strip of column bytes -> (w, bytearray).
+
+    Same bit layout as a framebuffer page, so drawing the strip (or a window
+    into it, which is what a marquee is) is `fb[o:o+n] = strip[a:b]` instead of
+    a per-pixel redraw.  The font must be <= 8 px tall: use ccfont.TINY.
+    """
+    if font["H"] > 8:
+        raise ValueError("text_strip needs a font <= 8px tall")
+    w = measure(font, s, spacing)
+    buf = bytearray(w if w > 0 else 1)
+    G = font["G"]
+    cx = 0
+    for ch in s:
+        g = G.get(ch) or G.get("?")
+        if not g:
+            continue
+        gw, data = g
+        stride = (gw + 7) // 8
+        for gy in range(font["H"]):
+            base = gy * stride
+            b = 1 << gy
+            for gx in range(gw):
+                if (data[base + (gx >> 3)] >> (7 - (gx & 7))) & 1:
+                    x = cx + gx
+                    if 0 <= x < w:
+                        buf[x] |= b
+        cx += gw + spacing
+    return w, buf
+
+
 def text_center(fb, font, s, y, on=True, spacing=1):
     w = measure(font, s, spacing)
     text(fb, font, s, (W - w) // 2, y, on, spacing)
