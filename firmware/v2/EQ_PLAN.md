@@ -33,7 +33,11 @@ Everything except the screen itself, which is waiting on a layout:
 | N-band parametric config writer | `host/eqapo.py` | **done**, engine-status check included |
 | curve maths + knob mappings | `device/eqcurve.py` | **done**, validated to 1e-11 dB against numpy |
 | protocol verbs | PROTOCOL.md §11, `link.py`, `naub_bridge.py` | **done**, pushes on connect |
-| EQ screen layout and controls | `device/` | **waiting on a drawing** |
+| EQ screen layout and controls | `device/eqscreen.py` | **done**, from the sketch |
+
+Remaining before it makes a sound: Equalizer APO has to be attached to the
+output actually in use (§2). The screen reports itself inert until then, which
+is the honest state rather than a curve that shapes nothing.
 
 The two host-side pieces are testable without the device:
 `python host/eqapo.py` reports the engine status and the config it would write;

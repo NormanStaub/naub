@@ -36,7 +36,8 @@
 # Deploy: python host/deploy.py mixer
 import random
 import time
-import naubhw, ccfont, drawer, link, media, mixer, switcher_data
+import naubhw, ccfont, drawer, eqcurve, eqscreen, link, media, mixer
+import switcher_data
 
 HOLD = 0.6            # seconds held = mute rather than open the picker
 TICK_MS = 16          # meter update rate; the FALL constants are tuned to it
@@ -46,7 +47,16 @@ EASE = 0.30           # ... and of the remaining scroll distance
 LIVE_S = 1.0          # no `meter` for this long = the host went away
 SIMULATE = False      # invent levels with no host?  See the note above.
 
-APP_MODE = 0          # index into mixer.MODES that owns this screen
+APP_MODE = 0          # index into mixer.MODES that owns the mixer screen
+EQ_MODE = 1           # ... and the one that owns the EQ screen
+
+# What a detent moves, per parameter.  Frequency and Q step in their LOG
+# mapping (see eqcurve), so a detent is the same musical distance everywhere
+# rather than a huge jump at the bottom and nothing at the top.
+EQ_GAIN_STEP = 0.5    # dB
+EQ_FREQ_STEP = 0.012  # of the 20 Hz - 20 kHz span
+EQ_Q_STEP = 0.02
+P_GAIN, P_FREQ, P_Q = 0, 1, 2
 
 disp = naubhw.display()
 bl = naubhw.Backlight(80)
@@ -60,8 +70,24 @@ MEDIA = {2: media.PREV, 3: media.PLAY, 4: media.NEXT}
 
 mx = mixer.Mixer(ccfont.TINY)
 dr = drawer.Drawer(switcher_data.ICONS, switcher_data.APPS, ccfont.TINY)
+eq_scr = eqscreen.EqScreen(ccfont.TINY)
+eq_cur = eqcurve.Curve(nband=eqscreen.NBAND)
 mx_views = [disp.make_views(fb) for fb in mx.planes]
 dr_views = [disp.make_views(fb) for fb in dr.planes]
+eq_views = [disp.make_views(fb) for fb in eq_scr.planes]
+
+# LOW is a low shelf, MID a peak, HIGH a high shelf: the tone-control split,
+# and what the host writes as LSC / PK / HSC.  The host overwrites all of this
+# with the real state on connect (eqband), so these are only what the panel
+# shows before anyone has said otherwise.
+EQ_INIT = ((eqcurve.LSC, 120.0, 0.7),
+           (eqcurve.PK, 1000.0, 0.9),
+           (eqcurve.HSC, 4000.0, 0.7))
+for _i, (_k, _f, _q) in enumerate(EQ_INIT):
+    eq_cur.set(_i, _k, _f, 0.0, _q, True)
+    eq_scr.handles[_i] = eq_cur.column_of(_f)
+eq_param = [P_GAIN] * eqscreen.NBAND      # which parameter each knob edits
+eq_dirty = True
 
 for c in range(mixer.NCOL):
     mx.set_name(c, dr.apps[c % len(dr.apps)] if dr.apps else '')
@@ -108,6 +134,42 @@ print("levels: %s | data port: %s"
          "ABSENT - run boot.py + power cycle, then host/naub_bridge.py"))
 
 
+def eq_text(i):
+    """What band i's header cell shows: whichever parameter its knob is on."""
+    b = eq_cur.bands[i]
+    p = eq_param[i]
+    if p == P_FREQ:
+        return '%dHZ' % int(b.f0 + 0.5) if b.f0 < 1000 else '%.1fK' % (b.f0 / 1000.0)
+    if p == P_Q:
+        return 'Q%.1f' % b.q
+    return '%+.1f' % b.db
+
+
+def eq_refresh(full=True):
+    """Redraw the EQ screen.  The curve is the expensive part (~13 ms for a
+    band change), so the header alone can be redrawn without it."""
+    global eq_dirty
+    for i in range(eqscreen.NBAND):
+        eq_scr.gains[i] = eq_cur.bands[i].db
+        eq_scr.handles[i] = eq_cur.column_of(eq_cur.bands[i].f0)
+        eq_scr.set_label(i, eq_text(i))
+    eq_scr.draw_head()
+    if full:
+        if eq_scr.engine:
+            eq_scr.draw_plot(eq_cur.heights(eqscreen.PLOT_H))
+        else:
+            eq_scr.draw_no_engine()
+    sync_foot()
+    eq_dirty = False
+
+
+def sync_foot():
+    """The mode bar belongs to the mixer; copy it onto the EQ screen so there
+    is exactly one implementation of it."""
+    o = mixer.PAGE_FOOT * 128
+    eq_scr.planes[0][o:o + 128] = mx.planes[0][o:o + 128]
+
+
 def gap():
     """The name cell the dropdown hangs out of: blanked, rule and all, while
     the panel is out.  Once a pick is confirmed (rev_t back to 0) the new name
@@ -134,8 +196,13 @@ def close_drawer():
     global mode, views, n_planes
     mode = 0
     mx.render()
-    views = mx_views
+    views = screen_views()
     n_planes = len(views)
+
+
+def screen_views():
+    """Whichever screen the current mode owns."""
+    return eq_views if mx.mode == EQ_MODE else mx_views
 
 
 def is_live(now):
@@ -171,10 +238,17 @@ def flip_mode(d):
     """Flip through the mode list.  The ticks wipe across to their new side and
     push the label along with them; bar_moving keeps stepping that until it
     settles."""
-    global bar_moving
+    global bar_moving, views, n_planes
+    was_eq = mx.mode == EQ_MODE
     bar_moving = mx.set_mode(mx.mode + d)
     lk.send("mode %d" % mx.mode)
     print("mode %d %s" % (mx.mode, mixer.MODES[mx.mode]))
+    if mx.mode == EQ_MODE:
+        eq_refresh()
+    elif was_eq:
+        mx.render()
+    views = screen_views()
+    n_planes = len(views)
 
 
 i = 0
@@ -236,6 +310,20 @@ while True:
                 mx.mute[ch] = t[2] == '1'
                 mx.draw_vol()
             bg_dirty = True
+        elif v == 'eqcaps' and len(t) >= 7:
+            # nbands fmin fmax maxdb sr ok.  ok=0 is a normal state, not an
+            # error: Equalizer APO attaches per endpoint, so it can be
+            # installed and still inert on the current output.
+            eq_cur.set_rate(float(t[5]))
+            eq_scr.engine = t[6] == '1'
+            eq_dirty = True
+            print("eq engine: %s" % ("ready" if eq_scr.engine else "INERT"))
+        elif v == 'eqband' and len(t) == 7:
+            i = int(t[1])
+            if 0 <= i < eqscreen.NBAND:
+                eq_cur.set(i, t[2], float(t[3]), float(t[4]), float(t[5]),
+                           t[6] == '1')
+                eq_dirty = True
         elif v == 'ping':
             lk.send('pong')
         elif v == 'hello':
@@ -252,6 +340,25 @@ while True:
             n = len(dr.apps) - 1.0
             t = target + d
             target = 0.0 if (t < 0 or n < 0) else (n if t > n else float(t))
+        elif mx.mode == EQ_MODE:
+            b = eq_cur.bands[c]
+            p = eq_param[c]
+            if p == P_GAIN:
+                g = max(-eqcurve.MAXDB,
+                        min(eqcurve.MAXDB, b.db + d * EQ_GAIN_STEP))
+                eq_cur.set(c, db=g)
+                lk.send("eqp %d gain %.2f" % (c, g))
+            elif p == P_FREQ:
+                f = eqcurve.pos_to_freq(
+                    eqcurve.freq_to_pos(b.f0) + d * EQ_FREQ_STEP)
+                eq_cur.set(c, f0=f)
+                lk.send("eqp %d freq %.4g" % (c, f))
+            else:
+                q = eqcurve.pos_to_q(
+                    eqcurve.q_to_pos(b.q) + d * EQ_Q_STEP)
+                eq_cur.set(c, q=q)
+                lk.send("eqp %d q %.3g" % (c, q))
+            eq_dirty = True
         elif mode == 0:
             v = mx.vol[c] + d * 0.04
             mx.vol[c] = 0.0 if v < 0 else (1.0 if v > 1.0 else v)
@@ -264,6 +371,7 @@ while True:
         mx.sysvol = 0.0 if v < 0 else (1.0 if v > 1.0 else v)
         lk.send("vol %d %d" % (mixer.NCOL, int(mx.sysvol * 100 + 0.5)))
         mx.draw_foot()
+        sync_foot()
         bg_dirty = True
 
     # ---- knob switches: ENC4 = system mute, ENC1-3 = pick / mute ----
@@ -284,6 +392,11 @@ while True:
                     mx.draw_vol()
                     lk.send("mute %d %d" % (c, 1 if mx.mute[c] else 0))
                     print("mute %d %d" % (c, mx.mute[c]))
+            elif mx.mode == EQ_MODE:              # cycle gain -> freq -> Q
+                eq_param[c] = (eq_param[c] + 1) % 3
+                eq_dirty = True
+                print("eq band %d edits %s"
+                      % (c, ('gain', 'freq', 'q')[eq_param[c]]))
             elif mode == 0:                       # open the dropdown
                 if mx.mode == APP_MODE:           # ... only in its own mode
                     open_drawer(c)
@@ -362,6 +475,12 @@ while True:
         dr.compose(int(reveal))
         if reveal == 0.0 and rev_t == 0.0:
             close_drawer()
+    elif mx.mode == EQ_MODE:
+        if bar_moving:
+            bar_moving = mx.step_foot()
+            sync_foot()
+        if eq_dirty:
+            eq_refresh()
     else:
         if (now - t_push) * 1000 >= TICK_MS:
             t_push = now

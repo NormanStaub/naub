@@ -332,6 +332,47 @@ python host/preview_mixer.py        # WYSIWYG check; --live drives it from real 
 python host/deploy.py mixer
 ```
 
+## The EQ mode (`eqscreen.py` + `eqcurve.py`)
+
+Three bands over a filled response curve, in the mixer's own three-column frame
+— three top knobs, so three bands. LOW is a low shelf, MID a peak, HIGH a high
+shelf: the tone-control split, written by the host as `LSC` / `PK` / `HSC`.
+
+```
+| LOW +1.5 | MID +0.0 | HIGH +1.0 |  band + gain, one per knob   page 0
+|---------------------------------|
+|  __O__   |         |            |  the curve, a handle on each band,
+| ::::::::::  ___O___|_____:::::::|  over a dot fill hanging from it
+|---------------------------------|  pages 1-6, 0 dB dead centre
+| EQ ||            SYS. ######    |  mode bar stays put          page 7
+```
+
+- **0 dB is the vertical middle**, so flat is a straight line across the centre
+  and the curve reads as deviation in both directions. 48 rows, so the centre
+  lands *on* a row rather than between two.
+- **The dot fill hangs from the curve**, on a grid anchored to the bottom so it
+  stays put as the curve moves instead of crawling — same reasoning as the
+  meter bands. Every curve height is precomputed as page masks, so a column is
+  six byte writes.
+- **The separators stop at the curve**, which is what makes it read as a
+  surface with the dots beneath rather than a line drawn over a texture.
+- **Knobs:** ENC1-3 turn their band; click cycles what that knob edits —
+  gain → frequency → Q — and the header cell shows whichever is live.
+- **The curve is truthful, not illustrative.** `eqcurve.py` evaluates the RBJ
+  cookbook coefficients Equalizer APO itself implements, checked against an
+  independent numpy evaluation to 2e-11 dB. One knob detent costs 13 ms because
+  only the band that moved is recomputed; a full rebuild would be 33 ms.
+- **No engine, no pretending.** Equalizer APO attaches per *endpoint*, so it
+  can be installed and still inert on the current output; the screen says
+  `NO EQ ENGINE ON THIS OUTPUT` rather than drawing a curve that shapes
+  nothing. See `EQ_PLAN.md` §2.
+
+```
+python host/eqapo.py            # engine status + the config it would write
+python host/eqapo.py --check    # a full cycle leaves config.txt byte-identical
+python host/preview_eq.py       # WYSIWYG check
+```
+
 ## Live audio: the host link
 
 **The bridge is not optional, and it is meant to stay running.** The panel is a
