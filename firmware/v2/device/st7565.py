@@ -3,9 +3,19 @@
 Init sequence is the EA DOGM128-6 "single supply 3.0/3.3 V" application
 circuit.  Measured on the V2 board (RP2350-Tiny, CircuitPython 10.3.0):
 
-  * full-frame show():    ~337 fps at 4 MHz SPI, ~340 at 8 MHz (Python-bound)
-  * partial span():       ~2240 updates/s at 8 MHz (16px sprite, 2 pages)
+  * full-frame show_pages():  1.75 ms, 572 fps at 8 MHz SPI
+  * full-frame show():        2.16 ms, 463 fps -- it slices the framebuffer
+                              per page, and a slice on the right of an
+                              expression allocates.  Use show_pages().
+  * partial span():           ~2240 updates/s at 8 MHz (16px sprite, 2 pages)
   * 8 MHz SPI verified clean on hardware; the ST7565R tolerates it fine.
+
+Faster is available and mostly unhelpful.  show_pages() measured 900 fps at
+16 MHz and 1175 at 32; holding CS low for a whole frame instead of framing each
+page adds another 10%.  But the panel is nowhere near the limit -- 1.75 ms out
+of a 5.5 ms frame -- and an STN LCD cannot resolve 60 Hz anyway, which is
+exactly why the FRC grayscale works.  The frame rate is set by what the UI
+redraws, not by this file.
 
 Framebuffer format (see gfx.py): bytearray(128*8), index = page*128 + x,
 bit (1 << (y & 7)) with LSB = top row of the page.

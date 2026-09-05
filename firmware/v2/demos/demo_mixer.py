@@ -28,6 +28,11 @@
 #       the other two are unmapped -- a transport key is no use while your
 #       hands are on the EQ, and a reset is.
 #
+# The backlight follows you: full while you are touching it, 10% after a
+# minute, off after five, fading between the three (device/idle.py).  Any knob
+# or key wakes it, and the wake also does whatever it was pressed for -- a mixer
+# you have to poke twice is worse than one that is dim.
+#
 # Only APP CTRL is implemented; flipping to EQ / CUSTOM 1 / CUSTOM 2 moves the
 # mode bar's ticks and label, and those screens land later.  The switcher opens
 # only in APP CTRL, since that is the mode it belongs to.
@@ -39,7 +44,7 @@
 # Deploy: python host/deploy.py mixer
 import random
 import time
-import naubhw, ccfont, drawer, eqcurve, eqscreen, link, media, mixer, wipe
+import naubhw, ccfont, drawer, eqcurve, eqscreen, idle, link, media, mixer, wipe
 import switcher_data
 
 HOLD = 0.6            # seconds held = mute rather than open the picker
@@ -64,7 +69,8 @@ EQ_Q_STEP = 0.02
 P_GAIN, P_FREQ, P_Q = 0, 1, 2
 
 disp = naubhw.display()
-bl = naubhw.Backlight(80)
+bl = naubhw.Backlight(idle.FULL)
+dim = idle.Idle(bl)                               # dims and sleeps the panel
 encs = naubhw.encoders()                          # ENC1-4
 sws = naubhw.encoder_switches()                   # all four knob switches
 btns = naubhw.buttons()                           # BTN1-5
@@ -187,11 +193,16 @@ def eq_refresh(curve=False):
     eq_dirty = False
 
 
+# prebuilt: the source of a slice assignment must never BE a slice, or it
+# allocates a copy of the page every time (see README, the 4.6 ms lesson)
+_FOOT_O = mixer.PAGE_FOOT * mixer.W
+_FOOT_MV = memoryview(mx.planes[0])[_FOOT_O:_FOOT_O + mixer.W]
+
+
 def sync_foot():
     """The mode bar belongs to the mixer; copy it onto the EQ screen so there
     is exactly one implementation of it."""
-    o = mixer.PAGE_FOOT * 128
-    eq_scr.planes[0][o:o + 128] = mx.planes[0][o:o + 128]
+    eq_scr.planes[0][_FOOT_O:_FOOT_O + mixer.W] = _FOOT_MV
 
 
 def set_screen(v):
@@ -332,6 +343,7 @@ while True:
         continue
     i = 0                                  # end of a gray cycle: safe to redraw
     now = time.monotonic()
+    dim.step(now)
 
     # ---- host ----
     for msg in lk.lines():
@@ -410,6 +422,7 @@ while True:
         if not d:
             continue
         last[c] = p
+        dim.poke(now)
         if mode == 1 and c == sel:
             n = len(dr.apps) - 1.0
             t = target + d
@@ -445,6 +458,7 @@ while True:
     if p != last[3]:
         v = mx.sysvol + (p - last[3]) * 0.04
         last[3] = p
+        dim.poke(now)
         mx.sysvol = 0.0 if v < 0 else (1.0 if v > 1.0 else v)
         lk.send("vol %d %d" % (mixer.NCOL, int(mx.sysvol * 100 + 0.5)))
         mx.draw_foot()
@@ -454,6 +468,8 @@ while True:
     # ---- knob switches: ENC4 = system mute, ENC1-3 = pick / mute ----
     for c in range(len(sws)):
         down = not sws[c].value
+        if down != was[c]:
+            dim.poke(now)
         if down and not was[c]:
             press_t[c] = now
         elif not down and was[c]:
@@ -494,6 +510,8 @@ while True:
     # release feels laggy in a way a mute toggle does not.
     for b in range(len(btns)):
         down = not btns[b].value
+        if down != bwas[b]:
+            dim.poke(now)
         if down and not bwas[b]:
             if b == 0:
                 flip_mode(-1)
@@ -565,8 +583,17 @@ while True:
             sync_foot()
         if (now - t_push) * 1000 >= TICK_MS:
             t_push = now
-            eq_scr.update(sys_lv if live else _ZERO_SPEC)
-            eq_dirty = True
+            # Cheap, and the mixer redraws the bar from half a dozen places
+            # (system volume, mute, the host) without knowing this screen is
+            # borrowing it.  One 128-byte copy is not worth chasing them all.
+            sync_foot()
+            if eq_scr.engine:
+                # ONLY the meter moves on a tick.  Going through eq_refresh()
+                # redrew the header too -- 3.3 ms out of every 16 spent
+                # rebuilding three labels that had not changed, which is where
+                # a third of the frame rate in this mode was going.
+                eq_scr.update(sys_lv if live else _ZERO_SPEC)
+                eq_scr.draw_plot()
         if eq_dirty:
             eq_refresh()
     else:
@@ -594,9 +621,9 @@ while True:
 
     if frames >= 1024:
         t1 = time.monotonic()
-        print("%.1f fps (%.1f Hz cycle) %s | %s vol=%s sys=%.2f" %
+        print("%.1f fps (%.1f Hz cycle) %s | %s vol=%s sys=%.2f bl=%.0f%%" %
               (frames / (t1 - t0), frames / (t1 - t0) / n_planes,
                "switcher" if mode else "mixer", mixer.MODES[mx.mode],
-               [round(v, 2) for v in mx.vol], mx.sysvol))
+               [round(v, 2) for v in mx.vol], mx.sysvol, dim.pct))
         frames = 0
         t0 = t1

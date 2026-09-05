@@ -14,6 +14,7 @@ device/   modules that live on the CIRCUITPY drive (pure CircuitPython)
   mixer.py     the mixer screen: 3 columns, 8-band dot meters, the mode bar
   drawer.py    the app switcher: a dropdown over the meters (pure Python too)
   media.py     transport keys over USB HID -- no library, no host software
+  idle.py      backlight: full while in use, 10% after 1 min, off after 5
   ccfont.py    C&C Red Alert font (TINY h8 full ASCII, SML h16, BIG digits h27)
 demos/    ready-to-flash examples (each becomes code.py) + generated data
   demo_mixer.py       the mixer screen + the app-switcher dropdown  <- the UI
@@ -40,6 +41,13 @@ host/     PC-side tools (Python 3 + Pillow, pyserial optional)
 ## Display: ST7565R (EA DOGM128W-6, 128x64 STN)
 
 Pins: A0=GP8 CS=GP9 SCL=GP10 SI=GP11 RST=GP12, backlight FET on GP13 (PWM).
+
+The backlight dims itself (`device/idle.py`): full while you are using it,
+10% one minute after the last knob or key, off after five, fading between —
+1.2 s down, 0.1 s back up, because settling should be unhurried and waking
+should not. The fade interpolates in perceptual space (duty ** 1/2.2), since a
+straight line in PWM duty looks like it plummets and then dawdles. The panel
+keeps drawing the whole time; only the light goes.
 Init = EA "single supply 3.0/3.3 V" sequence (see `st7565.py`). Config knobs
 on the constructor / `naubhw.display()`:
 
@@ -67,14 +75,29 @@ previews are pixel-exact (WYSIWYG workflow — always preview before flashing).
 
 | operation | rate |
 |---|---|
-| full-frame `show_pages()` @ 4 MHz | ~337 fps |
-| full-frame `show_pages()` @ 8 MHz | ~554 fps |
+| full-frame `show_pages()` @ 8 / 16 / 32 MHz | 572 / 900 / 1175 fps |
+| full-frame `show()` @ 8 MHz (slices per page — allocates) | 463 fps |
+| raw 1024-byte SPI write @ 8 MHz (the floor) | 1.31 ms |
 | partial `span()` (16px sprite, 2 pages) @ 8 MHz | ~2200 updates/s |
 | `drawer.compose()` open / mid-slide | 0.41 ms / 4.2 ms |
 | `mixer.draw_dots()` (24 bands + peak markers) | 1.2 ms |
+| `mixer.update()` + `draw_dots()` together | 4.5 ms |
+| `eqscreen.update()` + `draw_plot()` (meter only) | 3.7 ms |
+| poll 4 encoders + 9 switches | 0.056 ms |
 | whole UI, drawer open and scrolling | 390 fps (97 Hz gray cycle) |
-| whole UI, mixer screen, meter every frame | 160 fps |
+| whole UI, mixer screen | 359 fps |
+| whole UI, EQ screen | 380 fps |
 | free RAM with mixer + switcher loaded (8 apps, 2 tiers) | 358 kB |
+
+**What actually limits the frame rate.** Not the panel. A full frame costs
+1.75 ms of the ~2.7 ms the UI spends on one, and the SPI clock could be
+doubled for another 0.6 ms — the redraws are the rest, and they run on a
+16 ms tick, so *what you see moving* updates at 62.5 Hz however fast the loop
+spins. Two consequences worth remembering: pushing the same frame 300 times a
+second buys nothing, and the cheapest optimisation available is always to stop
+redrawing something that did not change. Latest example: the EQ screen was
+rebuilding its header on every meter tick — three labels that had not moved,
+3.3 ms out of every 16, worth **278 -> 380 fps** to skip.
 
 Keep hot loops allocation-free (prebuilt page commands, `make_views()`
 memoryviews, reused buffers) — GC pauses show up as visible flicker. The trap

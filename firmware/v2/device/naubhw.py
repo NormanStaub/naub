@@ -50,8 +50,10 @@ class Backlight:
         self.set(pct)
 
     def set(self, pct):
-        self.pct = max(0, min(100, pct))
-        self._pwm.duty_cycle = self.pct * 65535 // 100
+        """0..100, and it takes floats: device/idle.py fades through this, and
+        a 10 -> 0 ramp in whole percent is ten visible steps."""
+        self.pct = 0.0 if pct < 0 else (100.0 if pct > 100 else pct)
+        self._pwm.duty_cycle = int(self.pct * 655.35)
 
 
 def encoders(which=(0, 1, 2, 3)):
