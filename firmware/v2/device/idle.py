@@ -6,6 +6,12 @@ minute, dark after five, fading between the three.
     dim.poke(now)                # a knob moved / a key went down
     dim.step(now)                # once a frame
 
+`now` is time.monotonic_ns() -- nanoseconds, an integer.  NOT time.monotonic():
+that is a single-precision float of seconds since boot whose granularity
+doubles as the uptime doubles (0.488 ms at 1.5 h, ~8 ms after a day), and a
+three-second fade timed against it would coarsen the longer the panel stayed
+plugged in.  Pass nothing and it reads the clock itself.
+
 Nothing here touches the framebuffer.  The panel keeps drawing at full rate
 with the backlight at 0 -- an ST7565 is reflective enough to read in a bright
 room with the light off, and more to the point, coming back has to be instant.
@@ -41,21 +47,24 @@ FADE_UP_S = 0.10              # waking: fast enough to feel like a response
 FADE_DOWN_S = 3.00            # settling: slow enough not to read as a fault
 GAMMA = 2.2                   # see the note above
 
+NS = 1000000000.0             # everything below is nanoseconds; see the header
+
 
 class Idle:
     def __init__(self, bl, full=FULL, stages=STAGES,
                  up=FADE_UP_S, down=FADE_DOWN_S, gamma=GAMMA):
         self.bl = bl
         self.full = full
-        self.stages = stages
-        self.up = up
-        self.down = down
+        # seconds in the public constants, nanoseconds everywhere inside
+        self.stages = tuple((int(a * NS), p) for a, p in stages)
+        self.up = int(up * NS)
+        self.down = int(down * NS)
         self.gamma = gamma
         self.pct = full                  # where the backlight is now
-        self.t_poke = time.monotonic()
+        self.t_poke = time.monotonic_ns()
         self._from = self._to = full
         self._t0 = self.t_poke
-        self._dur = 0.0                  # 0 = not fading
+        self._dur = 0                    # 0 = not fading
         bl.set(full)
 
     # ---- input -----------------------------------------------------------
@@ -63,7 +72,7 @@ class Idle:
         """Something happened at the panel.  Restarts the clock, and brings the
         light back up if it had started to go."""
         if now is None:
-            now = time.monotonic()
+            now = time.monotonic_ns()
         self.t_poke = now
         if self._to != self.full:
             self._fade(self.full, self.up, now)
@@ -90,11 +99,11 @@ class Idle:
         b = (self._to * 0.01) ** (1.0 / g)
         return 100.0 * (a + (b - a) * s) ** g
 
-    def target(self, idle_s):
+    def target(self, idle_ns):
         """The duty this much idle time calls for."""
         t = self.full
         for after, pct in self.stages:
-            if idle_s >= after:
+            if idle_ns >= after:
                 t = pct
         return t
 
@@ -107,7 +116,7 @@ class Idle:
             u = (now - self._t0) / self._dur
             if u >= 1.0:
                 self._set(self._to)
-                self._dur = 0.0
+                self._dur = 0
                 return False
             self._set(self._mix(u))
             return True

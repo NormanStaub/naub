@@ -119,16 +119,35 @@ had to get right:
   plane spends on screen, so idling at the end of a cycle — holding the last
   plane through the gap — would tint them. One plane, one slot: 92 Hz for a
   binary screen, 4 × 92 for the drawer.
-* **Timed in `monotonic_ns()`.** `time.monotonic()` returns a float of seconds
-  since boot and its granularity decays with uptime — measured at **0.488 ms
-  after 1.5 hours**, which is a 4% error on a 10.8 ms frame. Every pacing loop
-  tried (single sleep, sliced, sleep-then-spin) landed on 96.2 Hz for that one
-  reason. `monotonic_ns()` is an integer and does not decay: same loop, 92.4 Hz.
+* **Timed in `monotonic_ns()`.** Every pacing loop tried (single sleep, sliced,
+  sleep-then-spin) landed on 96.2 Hz instead of 92.3, which looked like a bug in
+  the loop and was the clock — see below.
 
 And one consequence: the idle time has to be spent, not just slept through. The
 USB CDC receive ring holds ~200 bytes and the host's resync burst fills it, so
 the loop wakes every 2 ms to empty the port and parses the lines on the next
 frame. Backlog on connect went from 200 bytes to 25 in steady state.
+
+### Never time anything with `time.monotonic()`
+
+This build uses **single-precision floats** (`2.0**1023` is `inf`; at 5700 s
+uptime `t + 1e-6 == t`). `time.monotonic()` returns seconds since boot as one
+of those, so its granularity is the float spacing at the current uptime — and
+that **doubles every time the uptime doubles**:
+
+| uptime | `monotonic()` granularity |
+|---|---|
+| 1.5 h | 0.488 ms (measured) |
+| 3 h | ~1 ms |
+| 1 day | ~8 ms |
+| 1 week | ~125 ms |
+
+On a desk device that stays plugged in, a 16 ms tick timed against that clock
+eventually stops being a tick. **`time.monotonic_ns()` is an integer of
+nanoseconds and does not decay** (granularity 0.12-0.15 ms, from the tick
+source). Every clock in `demo_mixer.py` and `device/idle.py` is `_ns` for this
+reason: the frame pacing, the meter tick, the marquee, hold-to-mute, the host
+liveness timeout and the backlight fades.
 
 **What limits the frame rate below that.** Not the panel interface. A full frame
 costs

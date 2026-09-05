@@ -49,6 +49,11 @@ import switcher_data
 
 HOLD = 0.6            # seconds held = mute rather than open the picker
 TICK_MS = 16          # meter update rate; the FALL constants are tuned to it
+MARQ_MS = 140         # how often a too-long name scrolls one pixel
+DROP = 0.35           # per-frame fraction of the remaining drop distance
+EASE = 0.30           # ... and of the remaining scroll distance
+LIVE_S = 1.0          # no `meter` for this long = the host went away
+SIMULATE = False      # invent levels with no host?  See the note above.
 
 # The glass sets the useful frame rate, not this loop.  The ST7565R scans at
 # fOSC/(4*65) -- 77 Hz typical, 92 Hz at the fast end of the part's tolerance
@@ -59,20 +64,26 @@ TICK_MS = 16          # meter update rate; the FALL constants are tuned to it
 # Paced to the top of the tolerance so a fast part is still fed everything it
 # can display.
 #
-# Timed in NANOSECONDS.  time.monotonic() is a float of seconds since boot and
-# its granularity decays with uptime -- MEASURED at 0.488 ms after 1.5 hours,
-# and it gets coarser -- which is a 4% error on a 10.8 ms frame.  Every pacing
-# loop tried (single sleep, sliced, sleep-then-spin) came out at 96.2 Hz for
-# that one reason.  time.monotonic_ns() is an integer, granularity 0.122 ms,
-# and does not decay: with it the same loop paces to 92.5 Hz.
+# Timed in nanoseconds like everything else here (see TICK_NS below).  With the
+# float clock every pacing loop tried -- single sleep, sliced, sleep-then-spin
+# -- came out at 96.2 Hz instead of 92.3, which looked like a bug in the loop
+# and was a 0.488 ms clock quantum on a 10.8 ms frame.
 PANEL_HZ = 92.3
 FRAME_NS = int(1000000000.0 / PANEL_HZ)
 DRAIN_NS = 2000000    # how often to empty the host port while idling; see below
-MARQ_MS = 140         # how often a too-long name scrolls one pixel
-DROP = 0.35           # per-frame fraction of the remaining drop distance
-EASE = 0.30           # ... and of the remaining scroll distance
-LIVE_S = 1.0          # no `meter` for this long = the host went away
-SIMULATE = False      # invent levels with no host?  See the note above.
+
+# EVERY clock in this loop is time.monotonic_ns(), and it matters.
+# time.monotonic() is a float of seconds since boot, and this build uses
+# SINGLE precision -- 2.0**1023 is inf and t + 1e-6 == t.  Its granularity is
+# therefore the float spacing at the current uptime, which DOUBLES every time
+# the uptime doubles: measured 0.488 ms at 1.5 h, so ~1 ms at 3 h, ~8 ms at a
+# day, ~125 ms after a week.  On a desk device that stays plugged in, a 16 ms
+# tick timed against that clock eventually stops being a tick at all.
+# monotonic_ns() is an integer of nanoseconds and does not decay.
+TICK_NS = TICK_MS * 1000000
+MARQ_NS = MARQ_MS * 1000000
+HOLD_NS = int(HOLD * 1000000000.0)
+LIVE_NS = int(LIVE_S * 1000000000.0)
 
 _ZERO_SPEC = [0.0] * 21   # no host = no spectrum, so show a flat floor
 
@@ -160,9 +171,9 @@ bar_moving = False       # the mode ticks are mid-wipe
 
 last = [e.position for e in encs]
 was = [False] * len(sws)
-press_t = [0.0] * len(sws)
+press_t = [0] * len(sws)
 bwas = [False] * len(btns)
-t_push = t_marq = t_wipe = time.monotonic()
+t_push = t_marq = t_wipe = time.monotonic_ns()
 
 views = mx_views
 n_planes = len(views)      # mixer is binary (1 plane); the drawer is FRC (4)
@@ -277,7 +288,7 @@ def is_live(now):
     otherwise leave the meters frozen at whatever was playing when it went,
     which reads as a hung panel."""
     global live
-    if live and now - t_live > LIVE_S:
+    if live and now - t_live > LIVE_NS:
         live = False
         print("host quiet for %.0f s - levels back to flat" % LIVE_S)
     return live
@@ -342,7 +353,7 @@ def flip_mode(d):
 frames = 0
 guard_hit = False
 pending = []              # host lines drained while idling, parsed next frame
-t0 = time.monotonic()
+t0 = time.monotonic_ns()
 t_next = time.monotonic_ns()   # when the next plane is due on screen
 while True:
     # Paced per PUSH rather than per cycle.  With FRC grayscale the grays ARE
@@ -387,7 +398,7 @@ while True:
     if i < n_planes:
         continue
     i = 0                                  # end of a gray cycle: safe to redraw
-    now = time.monotonic()
+    now = time.monotonic_ns()
     dim.step(now)
 
     # ---- host ----
@@ -529,7 +540,7 @@ while True:
                 lk.send("mute %d %d" % (mixer.NCOL, 1 if mx.sysmute else 0))
                 bg_dirty = True
                 print("system mute %d" % mx.sysmute)
-            elif now - press_t[c] >= HOLD:
+            elif now - press_t[c] >= HOLD_NS:
                 if mode == 0:
                     mx.mute[c] = not mx.mute[c]
                     mx.draw_vol()
@@ -602,7 +613,7 @@ while True:
             focus = f
             dr.set_focus(focus)
 
-        if (now - t_push) * 1000 >= TICK_MS:
+        if now - t_push >= TICK_NS:
             t_push = now
             if bar_moving:
                 bar_moving = mx.step_foot()
@@ -631,7 +642,7 @@ while True:
         if bar_moving:
             bar_moving = mx.step_foot()
             sync_foot()
-        if (now - t_push) * 1000 >= TICK_MS:
+        if now - t_push >= TICK_NS:
             t_push = now
             # Cheap, and the mixer redraws the bar from half a dozen places
             # (system volume, mute, the host) without knowing this screen is
@@ -647,13 +658,13 @@ while True:
         if eq_dirty:
             eq_refresh()
     else:
-        if (now - t_push) * 1000 >= TICK_MS:
+        if now - t_push >= TICK_NS:
             t_push = now
             if bar_moving:
                 bar_moving = mx.step_foot()
             mx.update(levels(now))
             mx.draw_dots()
-        if (now - t_marq) * 1000 >= MARQ_MS:
+        if now - t_marq >= MARQ_NS:
             t_marq = now
             if mx.marquee():
                 mx.draw_names()
@@ -662,7 +673,7 @@ while True:
     # Last, so the screens underneath have already been updated this frame:
     # the incoming half of the wipe is live, not a still.  Stepped on the same
     # tick as everything else, or at 380 fps it would be over in 37 ms.
-    if tr.active and (now - t_wipe) * 1000 >= TICK_MS:
+    if tr.active and now - t_wipe >= TICK_NS:
         t_wipe = now
         o = mixer.PAGE_FOOT * mixer.W          # the mode bar is not wiped
         tr_fb[o:o + mixer.W] = mx.planes[0][o:o + mixer.W]
@@ -670,9 +681,10 @@ while True:
             set_screen(screen_views())
 
     if frames >= 1024:
-        t1 = time.monotonic()
+        t1 = time.monotonic_ns()
+        fps = frames * 1000000000.0 / (t1 - t0)
         print("%.1f fps (%.1f Hz cycle) %s | %s vol=%s sys=%.2f bl=%.0f%%" %
-              (frames / (t1 - t0), frames / (t1 - t0) / n_planes,
+              (fps, fps / n_planes,
                "switcher" if mode else "mixer", mixer.MODES[mx.mode],
                [round(v, 2) for v in mx.vol], mx.sysvol, dim.pct))
         frames = 0
