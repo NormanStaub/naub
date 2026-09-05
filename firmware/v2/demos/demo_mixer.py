@@ -9,6 +9,10 @@
 #       click       open the app carousel for that column; click again to assign
 #       hold 0.6 s  mute / unmute that column
 #   lower-right knob (ENC4): system volume
+#   BUTTON 1:       cycle the trace style (BARS / WAVE / SCOPE / SPECTRO)
+#
+# While comparing styles the footer reads "P1 <STYLE>" instead of "PRESET 1",
+# so you can see which one is on screen.
 #
 # Deploy: python host/deploy.py mixer
 import random
@@ -23,6 +27,7 @@ disp = naubhw.display()
 bl = naubhw.Backlight(80)
 encs = naubhw.encoders()                       # ENC1-4
 sws = naubhw.encoder_switches((0, 1, 2))       # the three column knobs
+btn1 = naubhw.buttons((0,))[0]                 # cycles the trace style
 
 mx = mixer.Mixer(ccfont.TINY)
 car = carousel.Carousel(switcher_data.ICONS, switcher_data.APPS)
@@ -35,6 +40,7 @@ for c in range(mixer.NCOL):
     mx.set_name(c, switcher_data.APPS[col_app[c]])
     mx.vol[c] = 0.4 + 0.25 * c
 mx.sysvol = 0.62
+mx.preset = 'P1 ' + mixer.STYLE_NAMES[mx.style]
 mx.render()
 
 # simulated audio: a slow envelope per column plus per-sample jitter
@@ -49,6 +55,7 @@ focus = -1
 
 last = [e.position for e in encs]
 was = [False] * mixer.NCOL
+was_btn = False
 press_t = [0.0] * mixer.NCOL
 t_push = t_marq = time.monotonic()
 
@@ -116,6 +123,16 @@ while True:
                 views = mx_views
                 print("assign col %d -> %s" % (c, switcher_data.APPS[col_app[c]]))
         was[c] = down
+
+    # ---- button 1: cycle the trace style ----
+    down = not btn1.value
+    if down and not was_btn:
+        name = mx.set_style(mx.style + 1)
+        mx.preset = 'P1 ' + name
+        if mode == 0:
+            mx.draw_foot()
+        print("style -> %s" % name)
+    was_btn = down
 
     # ---- animate ----
     if mode == 1:

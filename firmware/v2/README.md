@@ -128,6 +128,27 @@ Peak is linear amplitude, which looks dull on a small panel because speech and
 music sit low in the range, so `appmeter.levels()` applies a gentle curve
 (`curve=0.45`); pass `1.0` for raw.
 
+### Faking the waveform
+
+One number per app per moment is all we get, so the *shape* of a trace row is
+invented from it. `mixer.pattern()` holds the ways of faking it, cycled on the
+device with **Button 1** (`mixer.STYLE_NAMES`):
+
+| style | row shape |
+|---|---|
+| `BARS` | left-aligned, width = level |
+| `WAVE` | symmetric envelope about the column centre (default) |
+| `SCOPE` | one dot swinging like an oscilloscope sweep |
+| `SPECTRO` | faked bands with per-band decay — a spectrogram waterfall |
+
+### Binary vs gray
+
+**Volume bars are drawn pure binary** — solid in every FRC plane or not at all.
+A large area at part duty visibly flickers, far more than the trace's small
+isolated dots do, so the bar's range is shown by a 1px baseline instead of a
+gray track, and a muted bar becomes a hollow outline instead of a dimmer fill.
+Gray is kept where it earns its place: the trace's age fade, and the chrome.
+
 ### Why it is cheap to animate
 
 Same page-grid discipline as the carousel:

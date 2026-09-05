@@ -16,22 +16,26 @@ GAP = 6
 
 
 def demo_states():
-    m = mixer.Mixer(ccfont.TINY)
-    m.set_name(0, 'CHROME')
-    m.set_name(1, 'MUSIC')
-    m.set_name(2, 'SPOTIFY')
-    m.vol = [0.45, 0.70, 1.0]
-    m.sysvol = 0.62
-    # a plausible 10-sample history: two apps playing, one silent
-    random.seed(7)
-    for _ in range(mixer.DOT_ROWS):
-        m.push([0.35 + 0.45 * random.random(), 0.55 + 0.4 * random.random(), 0.0])
-    m.render()
-    yield m, 'two apps playing'
+    """One frame per trace style, so they can be compared side by side."""
+    for s in range(mixer.NSTYLE):
+        m = mixer.Mixer(ccfont.TINY)
+        m.set_name(0, 'CHROME')
+        m.set_name(1, 'MUSIC')
+        m.set_name(2, 'SPOTIFY')
+        m.vol = [0.45, 0.70, 1.0]
+        m.sysvol = 0.62
+        m.set_style(s)
+        random.seed(7)
+        # a plausible history: two apps playing, one silent
+        for i in range(mixer.DOT_ROWS):
+            m.push([0.30 + 0.5 * random.random(),
+                    0.55 + 0.4 * random.random(), 0.0])
+        m.render()
+        yield m, mixer.STYLE_NAMES[s]
 
     m.mute[1] = True
     m.render()
-    yield m, 'MUSIC muted'
+    yield m, 'MUSIC muted (hollow bar)'
 
     m.mute[1] = False
     m.set_name(1, 'SUPERNOTE_PARTNER')      # long -> marquee
@@ -39,11 +43,6 @@ def demo_states():
         m.marquee()
     m.render()
     yield m, 'long name, scrolled'
-
-    for _ in range(mixer.DOT_ROWS):
-        m.push([0.0, 0.0, 0.0])
-    m.render()
-    yield m, 'all silent'
 
 
 def live():

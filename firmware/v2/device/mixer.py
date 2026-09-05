@@ -23,6 +23,8 @@ cheap enough to animate under the FRC plane cycling:
   * age is drawn as gray by putting older rows into fewer FRC planes, the same
     trick carousel.py uses for unfocused icons.
 """
+from random import random as _rand
+
 import gfx
 
 W = gfx.W
@@ -39,7 +41,14 @@ PAGE_NAME = 1                 # app names (+ the rule under them)
 DOT_P0, DOT_P1 = 2, 6         # dot matrix band
 PAGE_FOOT = 7                 # preset / system volume
 
-VOL_MASK = 0x7E               # y1..y6 within page 0
+# Volume bars are drawn PURE BINARY -- solid in every FRC plane or not at all.
+# A half/quarter-duty bar visibly flickers: a large solid area shows the plane
+# cycling far more than the small isolated dots of the trace do.  So the range
+# is shown by a 1px baseline rather than a gray track, and a muted bar becomes
+# a hollow outline rather than a dimmer fill.
+VOL_MASK = 0x7E               # y1..y6 within page 0: the filled bar
+VOL_OUTLINE = 0x42            # y1 and y6 only: the same bar, muted
+VOL_BASE = 0x40               # y6 only: the empty part of the track
 RULE_MASK = 0x80              # bottom row of a page, for horizontal rules
 SPACING = 0                   # ccfont.TINY advances already carry side bearing;
                               # 1px more would push most app names into a marquee
@@ -60,9 +69,22 @@ _KEEP = ((0, 1, 2, 3), (0, 1, 2, 3),
          (0, 2), (0, 2), (0, 2),
          (0,), (0,))
 _GRAY = (0, 2)                # chrome (rules, separators): half duty
-_MUTED = (0, 2)               # a muted app's level: half duty, still readable
-_TRACK = (0,)                 # the unfilled part of a bar: quarter duty
 _ALL = (0, 1, 2, 3)
+
+# ---- trace styles ----------------------------------------------------------
+# Windows gives us one number per app per moment (peak amplitude); there is no
+# per-app spectrum to be had.  So the shape of a row is invented from that one
+# number -- these are the ways of faking it.  Each returns an 8-bit pattern of
+# which dots in the row are lit.
+BARS, WAVE, SCOPE, SPECTRO = 0, 1, 2, 3
+STYLE_NAMES = ('BARS', 'WAVE', 'SCOPE', 'SPECTRO')
+NSTYLE = 4
+
+# quarter-cycle sine, 16 steps -- avoids importing math on the device
+_SIN = (0.0, 0.38, 0.71, 0.92, 1.0, 0.92, 0.71, 0.38,
+        0.0, -0.38, -0.71, -0.92, -1.0, -0.92, -0.71, -0.38)
+_BAND_W = (1.0, 0.97, 0.92, 0.86, 0.79, 0.71, 0.62, 0.52)   # fake band tilt
+_BAND_DECAY = 0.72
 
 
 class Mixer:
@@ -77,7 +99,10 @@ class Mixer:
         self.vol = [0.0] * NCOL          # 0..1
         self.mute = [False] * NCOL
         self.sysvol = 0.0
-        self.hist = [[0] * DOT_ROWS for _ in range(NCOL)]   # dots lit per row
+        self.style = WAVE
+        self.hist = [[0] * DOT_ROWS for _ in range(NCOL)]   # dot pattern per row
+        self._phase = [0] * NCOL                           # SCOPE sweep
+        self._band = [[0.0] * DOT_COLS for _ in range(NCOL)]   # SPECTRO decay
         self.chrome()
 
     # ---- static furniture (draw once) ------------------------------------
@@ -102,18 +127,62 @@ class Mixer:
         self._scroll[i] = 0
         self._step[i] = 1
 
+    def pattern(self, c, lv):
+        """One level -> the 8 dots of one row, per the current style."""
+        if lv <= 0.0:
+            self._phase[c] = 0
+            return 0
+        if lv > 1.0:
+            lv = 1.0
+        s = self.style
+
+        if s == BARS:                       # left-aligned, height = level
+            return (1 << int(lv * DOT_COLS + 0.5)) - 1
+
+        if s == WAVE:                       # symmetric envelope about the centre
+            n = int(lv * DOT_COLS + 0.5)
+            if n < 1:
+                n = 1
+            a = (DOT_COLS - n) >> 1
+            return ((1 << n) - 1) << a
+
+        if s == SCOPE:                      # a single dot swinging like a trace
+            p = (self._phase[c] + 3) & 15
+            self._phase[c] = p
+            x = int(3.5 + 3.5 * lv * _SIN[p] + 0.5)
+            if x < 0:
+                x = 0
+            elif x >= DOT_COLS:
+                x = DOT_COLS - 1
+            return 1 << x
+
+        b = self._band[c]                   # SPECTRO: faked bands with decay
+        m = 0
+        for d in range(DOT_COLS):
+            v = b[d] * _BAND_DECAY
+            hit = lv * _BAND_W[d] * (0.55 + 0.9 * _rand())
+            if hit > v:
+                v = hit
+            b[d] = v
+            if v > 0.32:
+                m |= 1 << d
+        return m
+
     def push(self, levels):
         """Advance the trace one sample.  levels: NCOL floats 0..1."""
         for c in range(NCOL):
             h = self.hist[c]
-            n = int(levels[c] * DOT_COLS + 0.5)
-            if n < 0:
-                n = 0
-            elif n > DOT_COLS:
-                n = DOT_COLS
             for r in range(DOT_ROWS - 1, 0, -1):     # scroll down
                 h[r] = h[r - 1]
-            h[0] = n
+            h[0] = self.pattern(c, levels[c])
+
+    def set_style(self, s):
+        self.style = s % NSTYLE
+        for c in range(NCOL):
+            self._phase[c] = 0
+            for d in range(DOT_COLS):
+                self._band[c][d] = 0.0
+        return STYLE_NAMES[self.style]
 
     def marquee(self):
         """Advance any name too wide for its column; -> True if one moved."""
@@ -144,17 +213,18 @@ class Mixer:
             x0 = COLX[c]
             h = self.hist[c]
             for r in range(DOT_ROWS):
-                n = h[r]
-                if not n:
+                bits = h[r]
+                if not bits:
                     continue
                 o = ROW_PAGE[r] * W + x0
                 m = ROW_MASK[r]
                 for k in _KEEP[r]:
                     fb = self.planes[k]
-                    for d in range(n):
-                        x = o + DOTX[d]
-                        fb[x] |= m
-                        fb[x + 1] |= m
+                    for d in range(DOT_COLS):
+                        if (bits >> d) & 1:
+                            x = o + DOTX[d]
+                            fb[x] |= m
+                            fb[x + 1] |= m
         for k in _GRAY:                              # separators cross the band
             fb = self.planes[k]
             for sx in SEPX:
@@ -204,16 +274,14 @@ class Mixer:
             fill = int(self.vol[c] * COLW + 0.5)
             if fill > COLW:
                 fill = COLW
-            # muted: half duty instead of solid black, so the level still reads
-            # but the column is obviously not live
-            for k in (_MUTED if self.mute[c] else _ALL):
+            # muted -> hollow outline; live -> solid.  Binary either way.
+            m = VOL_OUTLINE if self.mute[c] else VOL_MASK
+            for k in _ALL:
                 fb = self.planes[k]
                 for x in range(x0, x0 + fill):
-                    fb[o + x] |= VOL_MASK
-            for k in _TRACK:                         # faint track for the rest
-                fb = self.planes[k]
+                    fb[o + x] |= m
                 for x in range(x0 + fill, x0 + COLW):
-                    fb[o + x] |= VOL_MASK
+                    fb[o + x] |= VOL_BASE
 
     def draw_foot(self):
         o = PAGE_FOOT * W
@@ -234,10 +302,8 @@ class Mixer:
             fb = self.planes[k]
             for x in range(bx, bx + fill):
                 fb[o + x] |= VOL_MASK
-        for k in _TRACK:
-            fb = self.planes[k]
             for x in range(bx + fill, W):
-                fb[o + x] |= VOL_MASK
+                fb[o + x] |= VOL_BASE
 
     def render(self):
         self.draw_vol()
