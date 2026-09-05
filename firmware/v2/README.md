@@ -10,7 +10,7 @@ device/   modules that live on the CIRCUITPY drive (pure CircuitPython)
   naubhw.py    board wiring: display, backlight, 4 encoders, 9 switches
   gfx.py       1-bit page framebuffer + text/icon drawing (runs on PC too)
   carousel.py  app-switcher carousel widget (pure Python -> previews on PC)
-  mixer.py     the mixer screen: 3 columns, volume bars, scrolling dot traces
+  mixer.py     the mixer screen: 3 columns, volume bars, dot level meters
   ccfont.py    C&C Red Alert font (TINY h8 full ASCII, SML h16, BIG digits h27)
 demos/    ready-to-flash examples (each becomes code.py) + generated data
   demo_mixer.py       the mixer screen + carousel picker  <- the main UI
@@ -97,15 +97,16 @@ screens from parts.
 
 ## The mixer screen (`mixer.py` + `demo_mixer.py`)
 
-Three app columns, each with a volume bar, a name, and a dot trace of what that
-app is actually playing; a footer with the preset and system volume.
+Three app columns, each with a volume bar, a name, and a dot level meter for
+what that app is playing; a footer with the preset and system volume.
 
 ```
 | ####----- | ######--- | ########## |  volume bar    page 0
 | CHROME    | MUSIC     | SPOTIFY    |  name, marquee page 1
-| oooo      | ooooooo   |            |  newest sample pages 2-6
-| ooooo     | ooooo     |            |    |  scrolls down,
-| ooo       | oooooo    |            |    v  fading as it ages
+| o o o o o | o o o o o |            |  meter hangs from the top
+| o o o o o | o o o o o |            |    |  and grows DOWN
+| --------- | o o o o o |            |    v  with the level
+|           | --------- |            |  peak marker at the leading edge
 | PRESET 1  |||  SYS. ############   |  footer        page 7
 ```
 
@@ -128,26 +129,28 @@ Peak is linear amplitude, which looks dull on a small panel because speech and
 music sit low in the range, so `appmeter.levels()` applies a gentle curve
 (`curve=0.45`); pass `1.0` for raw.
 
-### Faking the waveform
+### The meter
 
-One number per app per moment is all we get, so the *shape* of a trace row is
-invented from it. `mixer.pattern()` holds the ways of faking it, cycled on the
-device with **Button 1** (`mixer.STYLE_NAMES`):
+Each column is an **upside-down mixer meter**: the dot rows fill from the top
+downward with the level, and the thin continuous line at the leading edge is
+the **peak hold** — it jumps straight to any new peak and then settles back
+smoothly as the signal drops, so it detaches from the falling bar.
 
-| style | row shape |
-|---|---|
-| `BARS` | left-aligned, width = level |
-| `WAVE` | symmetric envelope about the column centre (default) |
-| `SCOPE` | one dot swinging like an oscilloscope sweep |
-| `SPECTRO` | faked bands with per-band decay — a spectrogram waterfall |
+Both use fast-attack / slow-release ballistics (`mixer.FALL`,
+`mixer.PEAK_FALL`), which is what makes a meter look alive rather than jittery;
+the peak falls about six times slower than the bar.
+
+The 11 possible fill levels are precomputed as page-aligned byte patterns
+(`LEVEL_PAGES`), so drawing a column is 5 slice copies plus the peak line
+rather than a loop over 80 dots. That is what affords a 30 Hz meter.
 
 ### Binary vs gray
 
-**Volume bars are drawn pure binary** — solid in every FRC plane or not at all.
-A large area at part duty visibly flickers, far more than the trace's small
-isolated dots do, so the bar's range is shown by a 1px baseline instead of a
-gray track, and a muted bar becomes a hollow outline instead of a dimmer fill.
-Gray is kept where it earns its place: the trace's age fade, and the chrome.
+**Bars and meter are drawn pure binary** — solid in every FRC plane or not at
+all. A large area at part duty visibly flickers, so the bar's range is shown by
+a 1px baseline instead of a gray track, and a muted bar becomes a hollow
+outline instead of a dimmer fill. Gray is kept only for the chrome (rules and
+column separators, at half duty).
 
 ### Why it is cheap to animate
 

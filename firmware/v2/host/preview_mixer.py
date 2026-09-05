@@ -16,33 +16,30 @@ GAP = 6
 
 
 def demo_states():
-    """One frame per trace style, so they can be compared side by side."""
-    for s in range(mixer.NSTYLE):
-        m = mixer.Mixer(ccfont.TINY)
-        m.set_name(0, 'CHROME')
-        m.set_name(1, 'MUSIC')
-        m.set_name(2, 'SPOTIFY')
-        m.vol = [0.45, 0.70, 1.0]
-        m.sysvol = 0.62
-        m.set_style(s)
-        random.seed(7)
-        # a plausible history: two apps playing, one silent
-        for i in range(mixer.DOT_ROWS):
-            m.push([0.30 + 0.5 * random.random(),
-                    0.55 + 0.4 * random.random(), 0.0])
+    """A loud hit, then the decay -- so the peak markers can be seen settling
+    away from the falling meter, which is the whole point of them."""
+    m = mixer.Mixer(ccfont.TINY)
+    m.set_name(0, 'CHROME')
+    m.set_name(1, 'MUSIC')
+    m.set_name(2, 'SPOTIFY')
+    m.vol = [0.45, 0.70, 1.0]
+    m.sysvol = 0.62
+
+    m.update([0.9, 0.65, 0.0])
+    m.render()
+    yield m, 'hit: meter and peak together'
+
+    for i in range(4):
+        m.update([0.15, 0.30, 0.0])          # signal drops; watch them separate
         m.render()
-        yield m, mixer.STYLE_NAMES[s]
+        yield m, 'decay %d: peak lags behind' % (i + 1)
 
     m.mute[1] = True
-    m.render()
-    yield m, 'MUSIC muted (hollow bar)'
-
-    m.mute[1] = False
-    m.set_name(1, 'SUPERNOTE_PARTNER')      # long -> marquee
+    m.set_name(1, 'SUPERNOTE_PARTNER')       # long -> marquee
     for _ in range(12):
         m.marquee()
     m.render()
-    yield m, 'long name, scrolled'
+    yield m, 'muted (hollow bar) + long name'
 
 
 def live():
@@ -58,7 +55,7 @@ def live():
     t0 = time.monotonic()
     while time.monotonic() - t0 < 4.0:
         lv = src.levels(names)
-        m.push(lv)
+        m.update(lv)
         for i, nm in enumerate(names):
             m.vol[i] = src.volume(nm)
         m.marquee()
