@@ -182,3 +182,29 @@ All of it works over the REPL, so none of it needs the CIRCUITPY drive.
 **Fast-spin check is still outstanding.** `PCB_DESIGN` §2.1 flags a ~10 rev/s
 ceiling on the A/B debounce RC; if counts drop *only* at speed the fix is a
 10 nF → 4.7 nF cap swap, not a respin. `stage3_test.py` part C measures it.
+
+---
+
+## 2026-09-04 - Windows host session: display capabilities mapped, toolkit landed
+
+Continued bring-up on the Windows host (same board, UID 01245632E3C8B66F).
+Key deltas from the mac findings: the CIRCUITPY drive DOES mount and is
+writable on Windows (primary deploy path); the serial console remains
+READ-ONLY (host->device writes hang).
+
+Capabilities established, all measured on hardware:
+
+- Text + icons render fine (C&C Red Alert bitmap font; binary logos legible
+  down to ~45px).
+- Grayscale via temporal FRC works: 4-plane recipe with Bayer residual +
+  (x+y)%4 phase, contrast 31, picked by eye against 7 alternatives.
+  ~554 fps full-frame at 8 MHz SPI => ~138 Hz per gray cycle.
+- Partial (dirty-span) updates: ~2200 updates/s. Motion limit is the STN LC
+  response (ghosting), not bandwidth.
+- 8 MHz SPI verified clean. Encoder divisor=2 confirmed (PEC11L skips
+  detents at rotaryio's default 4).
+
+All of it is packaged in [`firmware/v2/`](firmware/v2/) (driver, board
+wiring, FRC encoder, deploy tool, three flashable demos) - see its README
+for the numbers, config knobs, and workflow. That directory supersedes the
+scratch experiments; `bench/` remains the REPL-based acceptance tooling.

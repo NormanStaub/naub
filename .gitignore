@@ -32,3 +32,4 @@ naubd/target/
 naubd/config.json
 naubd/naub_state.json
 naubd/*.log
+firmware/v2/host/*_preview.png
