@@ -164,6 +164,16 @@ splits them: ticks left of the label are the modes behind you, ticks right the
 ones ahead. Flipping a mode redraws the bar and that is the entire transition —
 there is nothing to animate, which is why it feels instant.
 
+**The ticks sit on a fixed lattice** and never move to accommodate the text —
+a position indicator that shifted with the length of the name would indicate
+nothing. Think of it as `n` slots in a row: `n-1` hold a tick and one holds the
+label, and advancing a mode swaps the label with the tick on its right. The
+label is left-justified in a field as wide as the longest mode name, so exactly
+two things move: one tick hops to the other side, and the label's leading edge
+steps right by exactly the space that tick now occupies (`TICK_PITCH`, 3 px).
+With the current list the left ticks are always at x = 1, 4, 7 and the last
+tick always lands on x = 51, whatever the label says.
+
 Only **APP CTRL** is implemented. `EQ` has its verbs defined (PROTOCOL.md §10)
 but no V2 screen yet, and `CUSTOM 1/2` are placeholders; flipping to them moves
 the ticks and the label and leaves the mixer up. The switcher opens only in
@@ -259,15 +269,32 @@ python host/deploy.py mixer
 
 ## Live audio: the host link
 
-`demo_mixer.py` runs either way — it simulates levels until a host talks to it,
-then switches to real audio. To go live:
+**The bridge is not optional, and it is meant to stay running.** The panel is a
+display; the host is the thing that talks to WASAPI. Without
+`host/naub_bridge.py` there are no levels to show *and no way to apply a knob* —
+turning one moves the on-screen bar and nothing else.
 
 ```
 python host/deploy.py mixer     # ships device/boot.py too
 #  ... FULLY POWER CYCLE the board (unplug/replug) ...
-python host/naub_bridge.py      # streams real levels, applies knob moves
+python host/naub_bridge.py      # leave this running
 python host/naub_bridge.py --ports   # if it cannot find the data port
 ```
+
+- **The levels are real, and the device will not pretend otherwise.** With no
+  host talking, the meters sit **flat** rather than inventing a signal: a meter
+  that moves when nothing is playing is a liar, and it hides the one thing you
+  need to know, which is that the bridge is not running. `demo_mixer.SIMULATE`
+  turns the fake envelope back on for UI work. The device also drops back to
+  flat after `LIVE_S` (1 s) without a `meter` line, so a bridge that dies shows
+  up immediately instead of freezing the meters at whatever was last playing.
+- **Only the band *shape* is invented** — see "The meter" above. The amplitude
+  driving all 8 bands is the app's real WASAPI peak.
+- **The bridge reconnects by itself.** Every `deploy.py` reloads the board and
+  drops the CDC link; a bridge that died there would leave the panel dark and
+  silently stop applying knob moves, which looks exactly like a firmware bug and
+  is not one. It re-finds the port, reopens it and re-pushes the whole state
+  (`Bridge.resync`). `--once` opts out.
 
 - **Why a second port.** Host->device writes on the *console* port hang on this
   board (bring-up finding), so `device/boot.py` enables a second USB CDC

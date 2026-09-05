@@ -1,12 +1,17 @@
 # Demo: the naub V2 mixer screen, with the app-switcher dropdown as the column
 # picker, the mode bar along the bottom, and the aux keys wired up.
 #
-# Runs either way:
-#   * with host/naub_bridge.py talking to it over the USB CDC data port, the
-#     levels, names, volumes and the switcher's app list are this PC's REAL
-#     audio;
-#   * with nothing attached (or before boot.py + a power cycle enables the data
-#     port), it simulates levels so the interaction is still judgeable.
+# THE LEVELS ARE REAL.  host/naub_bridge.py streams this PC's actual per-app
+# WASAPI peaks over the USB CDC data port; the only invented part is the shape
+# across the 8 bands, because Windows exposes no per-app spectrum (PROTOCOL.md
+# section 11).  With no host talking, the meters sit FLAT rather than inventing
+# a signal -- a meter that moves when nothing is playing is a liar, and it also
+# hides the one thing you need to know, which is that the bridge is not
+# running.  Set SIMULATE = True to fake them anyway for UI work.
+#
+# The knobs are the same story: the panel is a display, and it is the host that
+# talks to WASAPI.  Without the bridge, turning a knob moves the on-screen bar
+# and nothing else.
 #
 #   ENC1-3 (the three top knobs), one per column:
 #       turn        set that app's volume
@@ -38,6 +43,8 @@ TICK_MS = 16          # meter update rate; the FALL constants are tuned to it
 MARQ_MS = 140         # how often a too-long name scrolls one pixel
 DROP = 0.35           # per-frame fraction of the remaining drop distance
 EASE = 0.30           # ... and of the remaining scroll distance
+LIVE_S = 1.0          # no `meter` for this long = the host went away
+SIMULATE = False      # invent levels with no host?  See the note above.
 
 APP_MODE = 0          # index into mixer.MODES that owns this screen
 
@@ -63,11 +70,12 @@ mx.sysvol = 0.62
 mx.render()
 
 lk = link.Link()
-live = False              # flips true as soon as the host says anything
+live = False              # is a host currently feeding us levels?
+t_live = 0.0              # ... when the last one arrived
 if lk.ready:
     lk.send(link.BANNER)
 
-# fallback when no host is driving us: a slow envelope per column plus jitter
+# only used when SIMULATE: a slow envelope per column plus jitter
 env = [0.65, 0.85, 0.0]
 host_lv = [0.0] * mixer.NCOL
 app_lv = [0.0] * len(dr.apps)          # one per entry in the switcher list
@@ -93,8 +101,10 @@ print("naub V2 mixer | %d columns | turn=volume click=switch hold=mute | ENC4=sy
       % mixer.NCOL)
 print("modes: %s | BTN1/2 flip | BTN3-5 media: %s"
       % (' > '.join(mixer.MODES), "HID ready" if md.ready else "NO HID ENDPOINT"))
-print("data port: %s" % ("ready, waiting for host" if lk.ready else
-                         "ABSENT - simulating (deploy boot.py + power cycle)"))
+print("levels: %s | data port: %s"
+      % ("SIMULATED" if SIMULATE else "real (host only)",
+         "ready, waiting for host" if lk.ready else
+         "ABSENT - run boot.py + power cycle, then host/naub_bridge.py"))
 
 
 def gap():
@@ -127,6 +137,35 @@ def close_drawer():
     n_planes = len(views)
 
 
+def is_live(now):
+    """Is a host still feeding us?  A bridge that dies mid-stream would
+    otherwise leave the meters frozen at whatever was playing when it went,
+    which reads as a hung panel."""
+    global live
+    if live and now - t_live > LIVE_S:
+        live = False
+        print("host quiet for %.0f s - levels back to flat" % LIVE_S)
+    return live
+
+
+def levels(now):
+    """One amplitude per column: the host's, or nothing."""
+    if is_live(now):
+        return host_lv
+    if not SIMULATE:
+        return (0.0, 0.0, 0.0)
+    for c in range(mixer.NCOL):
+        e = env[c]
+        if e > 0.0:                            # drift the envelope a little
+            e += (random.random() - 0.5) * 0.10
+            env[c] = 0.25 if e < 0.25 else (1.0 if e > 1.0 else e)
+    # occasional transients, to give the peak markers something to catch
+    return [0.0 if (mx.mute[c] or env[c] <= 0.0)
+            else min(1.0, env[c] * (0.35 + 0.5 * random.random()
+                                    + (0.6 if random.random() < 0.06 else 0.0)))
+            for c in range(mixer.NCOL)]
+
+
 def set_mode(d):
     """Flip through the mode list.  The bar's ticks ARE the position in it, so
     redrawing the bar is the whole transition -- there is nothing to animate."""
@@ -157,6 +196,7 @@ while True:
         if v == 'meter' and len(t) >= 1 + mixer.NCOL:
             for c in range(mixer.NCOL):
                 host_lv[c] = int(t[1 + c]) * 0.01
+            t_live = now
             if not live:
                 live = True
                 print("host connected: live audio")
@@ -297,16 +337,17 @@ while True:
 
         if (now - t_push) * 1000 >= TICK_MS:
             t_push = now
-            if live:
+            if is_live(now):
                 v = app_lv[focus] if 0 <= focus < len(app_lv) else 0.0
-            else:
+            elif SIMULATE:
                 v = min(1.0, 0.35 + 0.5 * random.random()
                         + (0.6 if random.random() < 0.06 else 0.0))
+            else:
+                v = 0.0
             dr.update(v)
             dr.draw_row()
             if reveal < drawer.H:      # meters still visible under the panel
-                mx.update(host_lv if live else
-                          [env[c] * random.random() for c in range(mixer.NCOL)])
+                mx.update(levels(now))
                 mx.draw_dots()
                 bg_dirty = True
 
@@ -319,20 +360,7 @@ while True:
     else:
         if (now - t_push) * 1000 >= TICK_MS:
             t_push = now
-            if live:
-                mx.update(host_lv)
-            else:
-                for c in range(mixer.NCOL):
-                    e = env[c]
-                    if e > 0.0:                    # drift the envelope a little
-                        e += (random.random() - 0.5) * 0.10
-                        env[c] = 0.25 if e < 0.25 else (1.0 if e > 1.0 else e)
-                # occasional transients, to give the peak markers something
-                mx.update([0.0 if (mx.mute[c] or env[c] <= 0.0)
-                           else min(1.0, env[c] * (0.35 + 0.5 * random.random()
-                                                   + (0.6 if random.random() < 0.06
-                                                      else 0.0)))
-                           for c in range(mixer.NCOL)])
+            mx.update(levels(now))
             mx.draw_dots()
         if (now - t_marq) * 1000 >= MARQ_MS:
             t_marq = now

@@ -244,6 +244,13 @@ ignored). Implemented in `firmware/v2/device/link.py` and
 the knob sits); `meter`/`ameter` are *amplitudes* (what is coming out). They
 move at completely different rates and only the first is state.
 
+**`meter` is the only source of level, and silence is a real answer.** The V2
+device does not synthesise amplitudes: with no `meter` arriving it shows flat
+meters, and it returns to flat about a second after the last one. A host that
+stops streaming therefore reads as "nothing is playing", not as a frozen panel.
+The 8 bands per column are a *shape* invented on-device from the one amplitude
+the wire carries — never a second source of level.
+
 **Level scaling.** Values are `peak ** 0.45 × 100` — WASAPI peak is linear
 amplitude, and speech and music sit low enough in that range to look dead on a
 small panel. `appmeter.AppMeters(curve=1.0)` sends raw amplitude instead.

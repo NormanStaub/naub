@@ -16,11 +16,18 @@ at its leading edge -- the peak hold, which jumps straight to any new peak and
 then settles back smoothly when the signal drops.
 
 The bar along the bottom is two pages tall so its text has room to breathe, and
-it names the current MODE rather than a fixed preset.  The `|||` between the
-label and SYS. is not decoration: it is the position in the mode list.  There
-is always one tick fewer than there are modes, and the current mode splits them
--- ticks to the LEFT of the label are the modes behind you, ticks to the RIGHT
-the ones ahead, so `|| CUSTOM 1 |` reads as third of four at a glance.
+it names the current MODE rather than a fixed preset.  The `|||` beside the
+label is not decoration: it is the position in the mode list.  There is always
+one tick fewer than there are modes, and the current mode splits them -- ticks
+to the LEFT of the label are the modes behind you, ticks to the RIGHT the ones
+ahead, so `|| CUSTOM 1 |` reads as third of four at a glance.
+
+The ticks sit on a FIXED LATTICE and never move to accommodate the text, which
+is the whole point of them: a position indicator that shifted with the length
+of the name would indicate nothing.  The label is left-justified in a field as
+wide as the longest mode name, so advancing a mode moves exactly two things --
+one tick hops from the right lattice to the left one, and the label's leading
+edge steps right by exactly the space that tick now occupies.
 
 Pure Python, no hardware imports, so host/preview_mixer.py renders exactly what
 the panel shows.
@@ -84,8 +91,9 @@ _TSHIFT = FOOT_TEXT_Y & 7     # = 5: page 6 takes (b << 5), page 7 takes (b >> 3
 
 TICK_P6 = 0xFC                # y50..y55 | one mode tick: a stroke taller than
 TICK_P7 = 0x7F                # y56..y62 | the caps, like a cabinet divider
-TICK_PITCH = 3                # 1px stroke + 2px gap
-TICK_GAP = 4                  # px between the tick group and the label
+TICK_PITCH = 3                # 1px stroke + 2px gap: the space one tick owns
+TICK_X = 1                    # the left lattice starts here
+TICK_GAP = 4                  # px between the label field and the right lattice
 
 SYS_P6 = 0xE0                 # y53..y55 | the system volume bar, level with
 SYS_P7 = 0x07                 # y56..y58 | the caps
@@ -153,6 +161,11 @@ class Mixer:
         self._ink = tuple(range(n))
         self.modes = tuple(modes)
         self.mode = mode
+        # The label field is as wide as the longest mode name, and the right
+        # lattice starts past the field's widest possible reach -- so no tick
+        # position depends on which mode is showing.
+        self._label_w = max(gfx.measure(font, m, SPACING) for m in self.modes)
+        self._tick_rx = TICK_X + self._label_w + TICK_GAP
         self.names = [''] * NCOL
         self._strip = [None] * NCOL      # (w, buf) from gfx.text_strip
         self._scroll = [0] * NCOL        # marquee offset, px
@@ -358,7 +371,6 @@ class Mixer:
             if c < W:
                 f6[c] |= TICK_P6
                 f7[c] |= TICK_P7
-        return x + n * TICK_PITCH
 
     def draw_foot(self):
         """The mode bar: position ticks split around the mode name, then the
@@ -371,17 +383,21 @@ class Mixer:
             f6[x] |= FOOT_RULE
 
         n = len(self.modes)
-        i = self.mode
-        left = i
-        right = n - 1 - i
-        x = 1
-        if left:
-            # _ticks() returns one pitch past the last stroke; back up to the
-            # stroke itself so the gap either side of the label is the same.
-            x = self._ticks(x, left) - (TICK_PITCH - 1) + TICK_GAP
-        x = self._text(x, self.modes[i] if 0 <= i < n else '')
-        if right:
-            self._ticks(x + TICK_GAP, right)
+        i = self.mode if 0 <= self.mode < n else 0
+        left = i                                  # modes behind us
+        right = n - 1 - i                         # ... and ahead
+        # Both lattices are fixed.  The left one fills up from its start as the
+        # mode advances; the right one empties from ITS start, which is why the
+        # ticks read as one moving across the label rather than two groups
+        # growing and shrinking.
+        # Think of it as n slots in a row: n-1 hold a tick and one holds the
+        # label, and advancing a mode swaps the label with the tick on its
+        # right.  Every slot's x depends only on the index and on the widest
+        # mode name, never on the name currently showing -- so the last tick
+        # always lands on the same column whatever the label says.
+        self._ticks(TICK_X, left)
+        self._ticks(self._tick_rx + left * TICK_PITCH, right)
+        self._text(TICK_X + left * TICK_PITCH, self.modes[i])
 
         sw, sbuf = gfx.text_strip(self.font, 'SYS.', SPACING)
         bx = W - SYS_BARW

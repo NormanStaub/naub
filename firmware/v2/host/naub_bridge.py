@@ -2,6 +2,12 @@
 
     python naub_bridge.py [--port COMx] [--rate 50] [--wait S] [--seconds S]
     python naub_bridge.py --ports          # what serial ports are there?
+    python naub_bridge.py --once           # don't reconnect; exit on unplug
+
+LEAVE THIS RUNNING.  Without it the device has no audio to show and no way to
+apply a knob: the panel is a display, the host is the thing that talks to
+WASAPI.  It reconnects by itself when the board reloads (every deploy.py does)
+or is replugged, so it can just stay in a terminal.
 
 Streams the live per-app WASAPI levels (appmeter.py) to the device over the USB
 CDC *data* port, and applies knob moves coming back.  The device runs
@@ -41,6 +47,16 @@ import appmeter
 NCOL = 3
 VID_PID = '2E8A'
 RESCAN_S = 1.0            # how often to re-enumerate audio sessions
+RECONNECT_S = 1.0         # how often to look for the board after it vanishes
+
+
+class Dropped(Exception):
+    """The device went away -- a reload, a replug, or the port closing.
+
+    This is the NORMAL case, not an error: every `deploy.py` reloads the board
+    and drops the CDC link.  A bridge that died here would leave the panel
+    showing nothing and silently stop applying knob moves, which looks exactly
+    like a firmware bug and is not one."""
 
 
 def _iface(p):
@@ -105,7 +121,9 @@ class Bridge:
         try:
             self.ser.write((s + '\n').encode('ascii', 'replace'))
         except serial.SerialTimeoutException:
-            pass
+            pass                      # device not draining; drop the line
+        except (serial.SerialException, OSError):
+            raise Dropped()
 
     def columns(self):
         """Which app each column shows.  A column the user assigned from the
@@ -206,20 +224,36 @@ class Bridge:
             self.push_state()
 
     def poll_rx(self):
-        n = self.ser.in_waiting
-        if n:
+        try:
+            n = self.ser.in_waiting
+            if not n:
+                return
             self._rx += self.ser.read(n)
-            if b'\n' in self._rx:
-                parts = self._rx.split(b'\n')
-                self._rx = parts.pop()
-                for raw in parts:
-                    self.handle(raw.decode('utf-8', 'replace').strip())
+        except (serial.SerialException, OSError):
+            raise Dropped()
+        if b'\n' not in self._rx:
+            return
+        parts = self._rx.split(b'\n')
+        self._rx = parts.pop()                # keep the trailing partial line
+        for raw in parts:
+            self.handle(raw.decode('utf-8', 'replace').strip())
 
-    def run(self, seconds=0.0):
+    def resync(self):
+        """Push everything the device needs after a (re)connect.  It boots with
+        nothing and is not the source of truth for volume -- see PROTOCOL.md
+        section 3."""
+        self.keys = []
+        self.apps = []
+        self.vol = [None] * (NCOL + 1)
+        self.muted = [None] * (NCOL + 1)
         self.send('hello')
         self.push_apps(force=True)
         self.push_names(force=True)
         self.push_state()
+
+    def run(self, seconds=0.0):
+        """Stream until --seconds elapses, or forever.  Raises Dropped when the
+        device goes away, which the caller turns into a reconnect."""
         period = 1.0 / self.rate
         t0 = time.monotonic()
         next_meter = t0
@@ -257,6 +291,21 @@ class Bridge:
             time.sleep(0.002)
 
 
+def serve(port, rate, seconds):
+    """One connected session.  -> True if it ended on its own terms."""
+    ser = open_data(port)
+    try:
+        b = Bridge(ser, rate)
+        b.resync()
+        b.run(seconds)
+        return True
+    finally:
+        try:
+            ser.close()
+        except Exception:
+            pass
+
+
 def wait_for_data(timeout):
     """Block until the data port shows up (i.e. the board was power cycled)."""
     end = time.monotonic() + timeout
@@ -273,13 +322,23 @@ def wait_for_data(timeout):
 
 
 def main(argv):
+    # This is usually left running in a terminal or piped to a log, and a
+    # block-buffered log that says nothing for 4 kB is useless for telling
+    # whether the link is alive.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     port = None
     rate = 50.0
     seconds = 0.0
     wait = 0.0
+    once = False
     it = iter(argv)
     for a in it:
-        if a == '--port':
+        if a == '--once':
+            once = True
+        elif a == '--port':
             port = next(it)
         elif a == '--rate':
             rate = float(next(it))
@@ -295,6 +354,7 @@ def main(argv):
         else:
             sys.exit(__doc__)
 
+    fixed_port = port
     if port is None:
         cons, port = find_ports()
         if port is None and wait:
@@ -306,14 +366,31 @@ def main(argv):
                      '(unplug/replug) so USB re-enumerates with two CDC '
                      'interfaces.\nConsole port seen: %s\n'
                      'Run with --ports to list what is there.' % cons)
-    print('data port: %s at %g Hz' % (port, rate))
-    ser = open_data(port)
+    print('data port: %s at %g Hz%s'
+          % (port, rate, '' if once else '  (reconnects on reload)'))
+    fixed = fixed_port
     try:
-        Bridge(ser, rate).run(seconds)
+        while True:
+            try:
+                serve(port, rate, seconds)
+                return                      # --seconds elapsed: done
+            except Dropped:
+                print('device dropped (reload or replug) - waiting for it')
+            except (serial.SerialException, OSError) as e:
+                print('port error: %s - waiting for it' % e)
+            if once:
+                return
+            # A reload re-enumerates, so re-find the port rather than trusting
+            # the old name; only an explicit --port stays pinned.
+            while True:
+                time.sleep(RECONNECT_S)
+                _, found = find_ports()
+                port = fixed if fixed else found
+                if port and (found or fixed):
+                    break
+            print('reconnected on %s' % port)
     except KeyboardInterrupt:
         print('\nstopped')
-    finally:
-        ser.close()
 
 
 if __name__ == '__main__':
