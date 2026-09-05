@@ -43,11 +43,30 @@ MARKER = '# naub parametric EQ (managed by the naub host)'
 MAXDB = 12.0                              # knob full scale, +/-
 FMIN, FMAX = 20.0, 20000.0
 QMIN, QMAX = 0.3, 10.0
-NBAND = 5
 WRITE_MS = 50.0                           # debounce; see the note above
 
 PK, LSC, HSC = 'PK', 'LSC', 'HSC'
 KINDS = (PK, LSC, HSC)
+
+# Three bands, because there are three top knobs -- and these defaults MUST
+# match device/eqscreen's LOW / MID / HIGH, or the panel draws a curve the
+# host never applies.  Low shelf, peak, high shelf: the tone-control split.
+DEFAULTS = ((LSC, 120.0, 0.7),
+            (PK, 1000.0, 0.9),
+            (HSC, 4000.0, 0.7))
+NBAND = len(DEFAULTS)
+
+# A band at 0 dB is already a no-op, so bands are ON by default and `on` is
+# reserved for deliberately parking one.  They used to default to OFF, which
+# meant every filter was written `Filter: OFF ...` -- Equalizer APO ignored the
+# lot, and the EQ silently did nothing at all while the panel drew the curve.
+AUTO_PREAMP = False
+# Preamp policy.  -(sum of positive gains) can never clip, and measured on real
+# audio it also means maxing one band drops everything else by 12.3 dB: the
+# boosted region barely moves and it just sounds like the volume went down.
+# A hardware mixer's EQ boosts, and this one has meters and a volume knob right
+# next to it, so boost is boost by default.  Set True to trade that for
+# guaranteed headroom.
 
 LF = chr(10)
 CR = chr(13)
@@ -122,8 +141,17 @@ def db_to_value(db):
     return int(round(db / MAXDB * 50.0 + 50.0))
 
 
+def fmt_hz(hz):
+    """Frequency as Equalizer APO will accept it.
+
+    NOT %g: it switches to scientific notation at five significant digits, so
+    20000 came out as `2e+04` and Equalizer APO silently dropped that filter --
+    i.e. winding a band to the top of its range turned it off."""
+    return ('%.0f' % hz) if hz >= 1000.0 else ('%.4g' % hz)
+
+
 class Band:
-    def __init__(self, kind=PK, f0=1000.0, db=0.0, q=1.0, on=False):
+    def __init__(self, kind=PK, f0=1000.0, db=0.0, q=1.0, on=True):
         self.kind = kind
         self.f0 = f0
         self.db = db
@@ -131,20 +159,26 @@ class Band:
         self.on = on
 
     def line(self):
-        return ('Filter: %s %s Fc %.4g Hz Gain %.2f dB Q %.3g'
-                % ('ON' if self.on else 'OFF', self.kind, self.f0,
+        return ('Filter: %s %s Fc %s Hz Gain %.2f dB Q %.3g'
+                % ('ON' if self.on else 'OFF', self.kind, fmt_hz(self.f0),
                    self.db, self.q))
 
     def wire(self):
         """The compact form the protocol carries."""
-        return '%s %.4g %.2f %.3g %d' % (self.kind, self.f0, self.db, self.q,
-                                         1 if self.on else 0)
+        return '%s %s %.2f %.3g %d' % (self.kind, fmt_hz(self.f0), self.db,
+                                       self.q, 1 if self.on else 0)
 
 
 class ParametricEq:
     def __init__(self, nband=NBAND, config_path=None):
         self.config_path = config_path or _config_path()
-        self.bands = [Band() for _ in range(nband)]
+        # keywords, not *unpack: DEFAULTS is (kind, f0, q) while Band takes
+        # (kind, f0, db, q), so positional unpacking silently puts Q in the
+        # gain slot -- a band that starts at 0.7 dB with Q 1
+        self.bands = [Band(kind=DEFAULTS[i][0], f0=DEFAULTS[i][1],
+                           q=DEFAULTS[i][2], db=0.0, on=True)
+                      if i < len(DEFAULTS) else Band()
+                      for i in range(nband)]
         self._dirty = False
         self._last_write = 0.0
         if self.available:
@@ -211,9 +245,11 @@ class ParametricEq:
         self._dirty = True
 
     def flat(self):
+        """Every band back to 0 dB.  They stay ON: a 0 dB filter is already a
+        no-op, and switching them off would make the next gain change do
+        nothing until something turned them back on."""
         for b in self.bands:
             b.db = 0.0
-            b.on = False
         self._dirty = True
 
     # ---- writing ---------------------------------------------------------
@@ -228,21 +264,26 @@ class ParametricEq:
 
     def flush(self, now=None):
         """Write immediately.  Always call this when a knob stops, so the file
-        cannot be left behind the display."""
+        cannot be left behind the display.
+
+        Never raises: this runs inside the serial loop, and an EQ that fails to
+        write is a far smaller problem than a panel that stops updating."""
         if not self.available:
             self._dirty = False
             return False
-        self._write()
-        self._ensure_include()
+        try:
+            self._write()
+            self._ensure_include()
+        except Exception as e:
+            print('EQ write failed: %s' % e)
         self._dirty = False
         self._last_write = now if now is not None else time.monotonic()
         return True
 
     def preamp(self):
-        """Enough headroom that boosts cannot clip.  The sum of the positive
-        gains is conservative -- the true peak of the summed response is lower
-        -- but it is one line and it can never be wrong in the direction that
-        distorts."""
+        """Headroom, in dB.  Zero unless AUTO_PREAMP -- see the note there."""
+        if not AUTO_PREAMP:
+            return 0.0
         boost = sum(b.db for b in self.bands if b.on and b.db > 0.0)
         return -boost
 
@@ -255,12 +296,39 @@ class ParametricEq:
         return '\n'.join(lines) + '\n'
 
     def _write(self):
-        """Atomic: Equalizer APO watches this file, and a half-written one is a
-        config it will happily try to parse."""
+        """Write the config, atomically when Windows lets us.
+
+        Atomic is preferable because Equalizer APO watches this file and a
+        half-written one is a config it will try to parse.  But it watches it
+        by holding it OPEN, so os.replace onto it intermittently fails with
+        PermissionError -- which, unhandled in the bridge, would take the whole
+        link down over a cosmetic nicety.  So: try the swap, retry briefly, and
+        fall back to writing in place.  A torn read self-corrects on the next
+        write, which is at most WRITE_MS away."""
+        text = self.render()
         tmp = self.eq_file + '.tmp'
-        with open(tmp, 'w', encoding='utf-8') as f:
-            f.write(self.render())
-        os.replace(tmp, self.eq_file)
+        try:
+            with open(tmp, 'w', encoding='utf-8') as f:
+                f.write(text)
+            for attempt in range(3):
+                try:
+                    os.replace(tmp, self.eq_file)
+                    return
+                except PermissionError:
+                    time.sleep(0.02)
+        except OSError:
+            pass
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)          # never leave litter in their config
+                except OSError:
+                    pass
+        try:
+            with open(self.eq_file, 'w', encoding='utf-8') as f:
+                f.write(text)
+        except OSError as e:
+            print('EQ write failed: %s' % e)
 
     @staticmethod
     def _read_raw(path):
@@ -325,11 +393,23 @@ class ParametricEq:
             os.remove(self.eq_file)
 
     def _restore(self):
-        """Read our own file back, so the EQ survives a host restart."""
+        """Read our own file back, so the EQ survives a host restart.
+
+        A file written by a different band layout is IGNORED rather than
+        half-applied.  That is not hypothetical: a five-band file left by an
+        older build restored `OFF` onto every band, so the EQ silently did
+        nothing and kept doing nothing across restarts, because each new
+        instance loaded the same dead state back in."""
         try:
             with open(self.eq_file, 'r', encoding='utf-8') as f:
                 text = f.read()
         except (FileNotFoundError, OSError):
+            return
+        n = sum(1 for ln in text.splitlines()
+                if ln.strip().lower().startswith('filter:'))
+        if n != len(self.bands):
+            print('ignoring %s: %d filters, this build has %d bands'
+                  % (INCLUDE_NAME, n, len(self.bands)))
             return
         i = 0
         for raw in text.splitlines():
