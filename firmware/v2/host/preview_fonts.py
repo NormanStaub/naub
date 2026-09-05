@@ -24,30 +24,27 @@ import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
+import gen_font
 import gfx
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WIN = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
 SRC = os.path.join(HERE, 'font_src')
 
-# (label, path, size, ytop) -- size/ytop are the gen_font.build() crop, tuned
-# per face so the caps land in rows 0..5 of the 8-row box.
-CANDIDATES = [
-    ('C&C Red Alert (current)', os.path.join(SRC, 'C&C Red Alert [INET].ttf'), 11, 3),
-    ('C&C Red Alert [LAN]', os.path.join(SRC, 'C&C Red Alert [LAN].ttf'), 11, 3),
-    ('Small Fonts', os.path.join(WIN, 'smallf.ttf'), 8, 1),
-    ('Tahoma', os.path.join(WIN, 'tahoma.ttf'), 9, 1),
-    ('Tahoma Bold', os.path.join(WIN, 'tahomabd.ttf'), 9, 1),
-    ('Verdana', os.path.join(WIN, 'verdana.ttf'), 9, 1),
-    ('Segoe UI', os.path.join(WIN, 'segoeui.ttf'), 9, 2),
-    ('Arial', os.path.join(WIN, 'arial.ttf'), 9, 1),
-    ('Arial Narrow', os.path.join(WIN, 'arialn.ttf'), 10, 1),
-    ('Consolas', os.path.join(WIN, 'consola.ttf'), 9, 1),
-    ('Lucida Console', os.path.join(WIN, 'lucon.ttf'), 9, 1),
-    ('Courier New', os.path.join(WIN, 'cour.ttf'), 10, 2),
-    ('Impact', os.path.join(WIN, 'impact.ttf'), 9, 1),
-    ('Franklin Gothic Med', os.path.join(WIN, 'framd.ttf'), 9, 1),
+# Candidates are the generator's own table, so the survey can never disagree
+# with what `gen_font.py --face X` would actually produce, plus a few faces
+# worth looking at that are not offered as a --face.
+EXTRA = [
+    ('Verdana', 'verdana.ttf', 9, 1),
+    ('Segoe UI', 'segoeui.ttf', 9, 2),
+    ('Arial', 'arial.ttf', 9, 1),
+    ('Arial Narrow', 'arialn.ttf', 10, 1),
+    ('Courier New', 'cour.ttf', 10, 2),
+    ('Impact', 'impact.ttf', 9, 1),
 ]
+CANDIDATES = [('%s (--face %s)' % (k, k), v[0], v[1], v[2])
+              for k, v in sorted(gen_font.FACES.items())]
+CANDIDATES += [(n, os.path.join(WIN, fn), sz, yt) for n, fn, sz, yt in EXTRA]
 
 SAMPLES = ('APP CTRL', 'SPOTIFY', 'CHROME')
 MEASURE = ('SPOTIFY', 'CUSTOM 2')   # the two fits that matter
@@ -61,14 +58,23 @@ def render(path, size, ytop, text):
     f = ImageFont.truetype(path, size)
     asc, desc = f.getmetrics()
     src_h = asc + desc
-    w = max(int(round(f.getlength(text))), 1)
-    im = Image.new('1', (w + 4, src_h + 4), 0)
-    ImageDraw.Draw(im).text((0, 0), text, font=f, fill=1)
+    # Draw at an offset and keep whatever the face drew: proportional faces
+    # overhang their advance and can start left of the pen origin, and clipping
+    # either shears the glyph -- the survey would then be judging the bug.
+    adv = max(int(round(f.getlength(text))), 1)
+    ox = 4
+    im = Image.new('1', (adv + 2 * ox + 8, src_h + ytop + 4), 0)
+    ImageDraw.Draw(im).text((ox, 0), text, font=f, fill=1)
     px = im.load()
+    cols = [x for x in range(im.width)
+            if any(px[x, y] for y in range(im.height))]
+    start = min(ox, cols[0]) if cols else ox
+    w = max(adv + (ox - start), (cols[-1] - start + 1) if cols else 0, 1)
     rows = []
     for y in range(H):
         sy = y + ytop
-        rows.append([bool(px[x, sy]) if sy < im.height else False
+        rows.append([bool(px[start + x, sy])
+                     if sy < im.height and start + x < im.width else False
                      for x in range(w)])
     return w, rows
 

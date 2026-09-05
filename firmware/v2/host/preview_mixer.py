@@ -45,9 +45,13 @@ def demo_states():
     yield m, 'muted (hollow bar) + long name'
 
     for k in range(1, len(mixer.MODES)):     # the mode bar's position ticks
-        m.mode = k
         m.sysmute = k == 2
-        m.draw_foot()
+        # set_mode + step, exactly as the device drives it: the ticks live in
+        # the animation state, so poking m.mode alone would leave them where
+        # the last mode had them.
+        m.set_mode(k)
+        while m.step_foot():
+            pass
         yield m, 'mode %d/%d: %s%s' % (k + 1, len(mixer.MODES), mixer.MODES[k],
                                        ' (system muted)' if m.sysmute else '')
 

@@ -3,7 +3,8 @@ and a dot level meter for what that app is playing, over a one-page mode bar.
 
     +------------------------------------+
     | ####----- | ######--- | ########## |  volume bar    (page 0)
-    | CHROME    | MUSIC     | SPOTIFY    |  name, marquee (page 1)
+    | CHROME    | MUSIC     | SPOTIFY    |  name, left-justified, marquee if
+    |           |           |            |  too long      (page 1)
     | -   - -   | -     -   |            |  7 bands per column, standing on
     | :   : :   | :     -   |            |  the floor and bouncing UP, each
     | : : : : : | : : : : : |            |  with its own peak marker riding
@@ -96,10 +97,10 @@ MODES = ('APP CTRL', 'EQ', 'CUSTOM 1', 'CUSTOM 2')
 
 TICK_MASK = 0xFF              # the full height of the bar: the ticks hang off
                               # the rule like cabinet dividers
-FOOT_SHIFT = 1                # push the label down a row so it clears the rule
-                              # above it, mirroring the 1px the names bar
-                              # leaves above ITS rule.  TINY's caps live in
-                              # rows 0..5, so shifting by one still fits.
+FOOT_SHIFT = 0                # rows to nudge the label down so it clears the
+                              # rule above it.  Zero for a face whose own crop
+                              # already starts on row 1 (see gen_font.py);
+                              # raise it for one that starts on row 0.
 TICK_PITCH = 3                # 1px stroke + 2px gap: the space one tick owns
 TICK_X = 1                    # the left lattice starts here
 TICK_GAP = 4                  # px between the label field and the right lattice
@@ -338,7 +339,10 @@ class Mixer:
             w, buf = st
             avail = COLW - 2
             if w <= avail:
-                x = COLX[c] + (COLW - w) // 2
+                # LEFT-justified, on the same 1px inset a marquee'd name uses,
+                # so a name does not jump sideways when it grows long enough to
+                # start scrolling.
+                x = COLX[c] + 1
                 src = memoryview(buf)[:w]
                 n = w
             else:
