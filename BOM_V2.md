@@ -194,6 +194,60 @@ schematic / LED55X46-A datasheet — not invented here.
 
 ---
 
+## Planned for the next revision (same PCB, parts only)
+
+Agreed for the **next** build, not this one. Nothing in this section touches the
+V2 board — don't act on it while assembling the current revision.
+
+| # | Component | Next-revision part | Why |
+|---|-----------|--------------------|-----|
+| 1 | Rotary encoder | **Bourns PEC11L-4015F-S0020** | Detentless (detent code `0`), 15 mm shaft, 20 PPR — the detented feel reads as rough and clicky; grease-damped weight replaces the click |
+
+> **Baseline caveat.** This file currently lists `PEC11L-4020F-S0020` (detentless,
+> 20 mm shaft), while `worktree-encoder-detent-swap` lists `PEC11L-4215F-S0015`
+> (30 detents, 15 mm shaft). Against the former the delta is **shaft length only**;
+> against the latter it is **detent code and resolution** as well. Reconcile when
+> those branches merge.
+
+### Encoder — Bourns PEC11L-4015F-S0020 (planned)
+
+| Spec | Value |
+|------|-------|
+| Detents | **0 — none.** Ordering digit: `0` = no detents (15 or 20 pulses), `1` = 20 detents, `2` = 30 detents |
+| Resolution | 20 PPR |
+| Shaft | 6 mm **flatted**, **15 mm measured from the mounting surface** (top of the M7 bushing, not the body) |
+| Push switch | Retained — SPST momentary, 610 ± 306 gf, 0.5 mm travel |
+| Body / bushing | 5.0 mm above PCB + 4.5 mm M7×0.75 bushing → mounting surface at **9.5 mm**, shaft tip at **24.5 mm** |
+| Torque | Running 10–150 gf-cm; no detent torque term |
+| Life | 100,000 cycles rotational / 100,000 switch actuations |
+
+**No PCB work.** The in-repo footprint
+`naub:RotaryEncoder_Bourns_PEC11L-4xxxF-Sxxxx_Vertical` is deliberately
+variant-agnostic: detent code, shaft length and resolution change no physical
+dimension. Same pads, same netlist, same pin map, same 5.0 mm body height.
+
+**Pairs with the Nyogel 767A** (row 2 above): a detentless shaft has nothing but
+running torque to give it weight, so the grease stops being optional. Budget time
+to dial it in — hand-applied damping is hard to match across four knobs, and the
+4.5 mm bushing is a short, loose annulus rather than a designed damper. If
+unit-to-unit consistency matters more than authenticity, a panel-side O-ring under
+the knob skirt sets the drag by printed geometry instead.
+
+**Firmware knock-on:** with no detents there is no click to align counts to, so
+`divisor` becomes a free choice rather than the fixed `2`, and `STEP` wants
+retuning against 20 PPR. Also re-check the fast-spin ceiling in PCB_DESIGN §2 —
+20 PPR is electrically ~33 % faster than 15 PPR, which pulls the limit back toward
+~10 rev/s. Watch for dither at rest: a detentless shaft can park mid-transition,
+where `divisor = 4` is the most noise-immune.
+
+**Shaft-style note:** the knurled `PEC11L-4015K-…` variant is *not* a trim-to-fit
+substitute — its knurl is a 6 mm band at the very tip, identical on the 15 mm and
+20 mm shafts, so cutting to length destroys the grip (and the 20 mm version's extra
+length is all neck, buying no extra grip). The flatted `F` keeps a 7 mm flat back
+from the tip and tolerates trimming.
+
+---
+
 ## Open decisions / TBD for V2
 
 - [x] **Controller:** Waveshare RP2350-Tiny + panel-mount USB-C adapter
@@ -231,6 +285,7 @@ schematic / LED55X46-A datasheet — not invented here.
 - CircuitPython build for the RP2350-Tiny — <https://circuitpython.org/board/waveshare_rp2350_tiny/>
 - Bourns PEC11L series datasheet (REV. 04/26) — <https://www.bourns.com/docs/Product-Datasheets/PEC11L.pdf>
 - PEC11L-4020F-S0020 (Mouser) — <https://www.mouser.com/ProductDetail/Bourns/PEC11L-4020F-S0020>
+- PEC11L-4015F-S0020 — planned next-revision encoder (DigiKey) — <https://www.digikey.com/en/products/detail/bourns-inc/PEC11L-4015F-S0020/4699163>
 - Alps EC11 series datasheet — <https://www.avnet.com/fsp/opasdata/d120001/medias/docus/196/Alps-Alpine-EC11-Series-EN-Datasheet.pdf>
 - Nye Nyogel 767A damping grease — <https://www.nyelubricants.com/nyogel-767a>
 - EA DOGM128W-6 (128×64 FSTN+ STN LCD, ST7565R) — <https://www.lcd-module.com/eng/pdf/grafik/dogm128e.pdf>
