@@ -1,48 +1,18 @@
 """Regenerate demos/appicons.py from the apps currently open on this PC.
 
-Enumerates processes with visible windows (PowerShell), extracts each exe's
-icon, lays them out in a grid, and FRC-encodes the screen (frc.py).  Run it
-any time; then `python deploy.py icons` to see it on the device.
+Enumerates processes with visible windows (appscan.py), lays their icons out in
+a grid, and FRC-encodes the screen (frc.py).  Run it any time; then
+`python deploy.py icons` to see it on the device.
+
+This bakes one fixed screen.  For the scrollable app switcher, whose icons have
+to move, see gen_switcher.py.
 """
 import _paths
-import os, subprocess, sys, tempfile
+import os, sys, tempfile
 from PIL import Image
-import gfx, frc
+import appscan, gfx, frc
 
 ICON = 30
-SKIP = {'applicationframehost', 'systemsettings', 'explorer', 'textinputhost',
-        'searchhost', 'shellexperiencehost', 'startmenuexperiencehost'}
-
-PS_LIST = ("Get-Process | Where-Object { $_.MainWindowTitle -ne '' -and $_.Path } | "
-           "Select-Object -ExpandProperty Path -Unique")
-PS_EXTRACT = """Add-Type -AssemblyName System.Drawing
-$ic = [System.Drawing.Icon]::ExtractAssociatedIcon('{exe}')
-$ic.ToBitmap().Save('{png}', [System.Drawing.Imaging.ImageFormat]::Png)"""
-
-
-def open_app_icons(outdir):
-    """-> list of (name, png_path) for real user-facing open apps."""
-    r = subprocess.run(['powershell', '-NoProfile', '-Command', PS_LIST],
-                       capture_output=True, text=True)
-    icons = []
-    for exe in r.stdout.splitlines():
-        exe = exe.strip()
-        if not exe:
-            continue
-        name = os.path.splitext(os.path.basename(exe))[0]
-        key = name.lower().replace(' ', '').replace('.', '')
-        if any(key.startswith(s) for s in SKIP) or key.startswith('powertoys'):
-            continue
-        png = os.path.join(outdir, key + '.png')
-        p = subprocess.run(['powershell', '-NoProfile', '-Command',
-                            PS_EXTRACT.format(exe=exe, png=png)],
-                           capture_output=True, text=True)
-        if os.path.exists(png):
-            icons.append((name, png))
-            print('  icon:', name)
-        else:
-            print('  no icon for %s (%s)' % (name, p.stderr.strip()[:80]))
-    return icons
 
 
 def layout(n):
@@ -61,7 +31,7 @@ def layout(n):
 if __name__ == '__main__':
     here = os.path.dirname(os.path.abspath(__file__))
     with tempfile.TemporaryDirectory() as td:
-        icons = open_app_icons(td)
+        icons = appscan.open_app_icons(td)
         if not icons:
             sys.exit('no app icons found')
         icons = icons[:8]

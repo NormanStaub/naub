@@ -9,19 +9,23 @@ device/   modules that live on the CIRCUITPY drive (pure CircuitPython)
   st7565.py    ST7565R driver: full-frame, partial-span, FRC-friendly
   naubhw.py    board wiring: display, backlight, 4 encoders, 9 switches
   gfx.py       1-bit page framebuffer + text/icon drawing (runs on PC too)
+  carousel.py  app-switcher carousel widget (pure Python -> previews on PC)
   ccfont.py    C&C Red Alert bitmap font (SML full ASCII h16, BIG digits h27)
 demos/    ready-to-flash examples (each becomes code.py) + generated data
-  demo_app_icons.py   open-app icons in 4-plane FRC grayscale  <- UI starting point
+  demo_switcher.py    scrollable app switcher   <- the first real UI screen
+  demo_app_icons.py   open-app icons in 4-plane FRC grayscale (static screen)
   demo_gray_modes.py  8 grayscale techniques on one knob (the experiment)
   demo_ball.py        bouncing ball, dirty-span updates (refresh/motion test)
 host/     PC-side tools (Python 3 + Pillow, pyserial optional)
-  deploy.py       python deploy.py ball|gray|icons  -> copies to K:, watches serial
+  deploy.py       python deploy.py ball|gray|icons|switch -> copies to K:, watches serial
   frc.py          THE reusable piece: ink levels / PIL image -> FRC bitplanes
-  gen_appicons.py regenerates demos/appicons.py from currently-open apps
+  appscan.py      enumerate open apps + extract their icons (Windows)
+  gen_switcher.py regenerates demos/switcher_data.py (movable per-tier icons)
+  gen_appicons.py regenerates demos/appicons.py (one baked screen)
   gen_grad.py     regenerates demos/graygrad.py (gradient planes)
   gen_font.py     TTF -> ccfont.py (extract repo-root c_c_red_alert_inet.zip
                   into host/font_src/ first)
-  preview_gray.py / draw_logos.py / gen_icon.py   previews & binary icons
+  preview_switcher.py / preview_gray.py / draw_logos.py / gen_icon.py  previews
 ```
 
 ## Display: ST7565R (EA DOGM128W-6, 128x64 STN)
@@ -48,6 +52,9 @@ previews are pixel-exact (WYSIWYG workflow — always preview before flashing).
 | full-frame `show_pages()` @ 4 MHz | ~337 fps |
 | full-frame `show_pages()` @ 8 MHz | ~554 fps |
 | partial `span()` (16px sprite, 2 pages) @ 8 MHz | ~2200 updates/s |
+| `carousel.render()` (5 icons, 4 planes) | 1.9 ms (~1 frame) |
+| `carousel.set_focus()` (16px label via `gfx.text`) | 16 ms (~2 gray cycles) |
+| free RAM with the switcher loaded (8 apps, 3 tiers) | 371 kB |
 
 Keep hot loops allocation-free (prebuilt page commands, `make_views()`
 memoryviews, reused buffers) — GC pauses show up as visible flicker.
@@ -84,6 +91,47 @@ while True:
 `frc.encode(..., ox=, oy=, planes=)` composites into existing planes with
 screen-global dither coordinates, so regions tile seamlessly — build mixed
 screens from parts.
+
+## The app switcher (`carousel.py` + `demo_switcher.py`)
+
+The first real UI screen: a shelf of app icons, the focused one large and
+black, its neighbours smaller and grayer, scrolled with the top-left knob.
+
+```
+    [ic]   [  ICON  ]   [ic]      icons, bottom-aligned on page 4
+           . . o . . .            position rail   (page 5)
+              CHROME              app name        (pages 6-7)
+```
+
+Two decisions make it cheap enough to animate underneath the FRC cycling:
+
+- **Page-aligned size tiers.** `TIERS = ((40,0),(32,1),(24,2))` — every icon
+  size is a multiple of 8 sitting on a page boundary, so drawing one is
+  `fb[o:o+w] = src[s:s+w]`, no bit shifting. Horizontal position is free
+  either way (x *is* the byte index), so the scroll is a pure byte copy:
+  1.9 ms for a whole 5-icon, 4-plane frame.
+- **Dimming by plane subset.** An unfocused icon is drawn into only 3 (or 2)
+  of the 4 FRC planes, which lowers its duty and therefore its gray. The
+  depth cue costs no extra pixel data — see `_KEEP` / `ink_of()`.
+
+Tier and ink are chosen from the *fractional* distance to the focus, so
+easing `pos` toward an integer target produces the zoom for free. Measured
+on hardware: 552 fps at rest, 517 fps while actively scrolling.
+
+`gfx.text` is the one slow thing (16 ms — per-pixel Python), so
+`demo_switcher.py` only redraws the name once the scroll is nearly settled
+(`SETTLED`); redrawing it per detent would stall a fast spin.
+
+Regenerate the icons for whatever you have open, then flash:
+
+```
+python host/gen_switcher.py        # -> demos/switcher_data.py (~41 kB, 12.8 kB of pixels)
+python host/preview_switcher.py    # WYSIWYG check; --anim for the transition
+python host/deploy.py switch
+```
+
+`carousel.py` imports nothing but `gfx`, so `preview_switcher.py` drives the
+exact code the device runs — always preview before flashing.
 
 ## Motion
 
