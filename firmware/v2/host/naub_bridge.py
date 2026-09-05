@@ -20,9 +20,14 @@ Protocol (PROTOCOL.md; `meter` is the V2 addition):
     ->  meter <v0> <v1> <v2>  column levels, sent at --rate Hz
     ->  apps  <A,B,C>         every app with a live session (the switcher list)
     ->  ameter <v0> <v1> ...  one level per app in that list, at --rate Hz
+    ->  ping                  liveness probe; the device answers `pong`
     <-  vol   <ch> <0..100>   a knob moved
-    <-  mute  <ch> <0|1>      a knob was held
+    <-  mute  <ch> <0|1>      a knob was held; ch 3 is the system knob's click
     <-  pick  <ch> <APP>      the switcher assigned an app to a column
+    <-  mode  <idx>           the mode bar was flipped (BTN1/BTN2)
+    <-  btn   <n> <0|1>       an aux key; BTN3-5 are media transport and are
+                              ALSO sent as USB HID, which is what actually
+                              moves the track -- this line is only telemetry
 """
 import re
 import sys
@@ -93,7 +98,7 @@ class Bridge:
         self.apps = []            # every app with a live session
         self.pinned = [None] * NCOL   # columns the device chose by hand
         self.vol = [None] * (NCOL + 1)
-        self.muted = [None] * NCOL
+        self.muted = [None] * (NCOL + 1)   # ... + the system endpoint
         self._rx = b''
 
     def send(self, s):
@@ -153,12 +158,23 @@ class Bridge:
         if v != self.vol[NCOL]:
             self.vol[NCOL] = v
             self.send('level %d %d' % (NCOL, v))
+        m = 1 if self.src.system_muted() else 0
+        if m != self.muted[NCOL]:
+            self.muted[NCOL] = m
+            self.send('mute %d %d' % (NCOL, m))
 
     def handle(self, line):
         t = line.split()
         if not t:
             return
-        if t[0] == 'vol' and len(t) == 3:
+        if t[0] == 'pong':
+            print('  pong')
+        elif t[0] == 'mode' and len(t) == 2:
+            print('  mode -> %s' % t[1])
+        elif t[0] == 'btn' and len(t) == 3:
+            if t[2] == '1':
+                print('  aux key %s' % t[1])
+        elif t[0] == 'vol' and len(t) == 3:
             ch, v = int(t[1]), int(t[2])
             if ch == NCOL:
                 self.src.set_system_volume(v / 100.0)
@@ -169,9 +185,11 @@ class Bridge:
             print('  knob %d -> %d%%' % (ch, v))
         elif t[0] == 'mute' and len(t) == 3:
             ch, m = int(t[1]), int(t[2])
-            if 0 <= ch < len(self.keys) and self.keys[ch]:
+            if ch == NCOL:                    # the system knob's click
+                self.src.set_system_mute(bool(m))
+            elif 0 <= ch < len(self.keys) and self.keys[ch]:
                 self.src.set_mute(self.keys[ch], bool(m))
-                self.muted[ch] = m
+            self.muted[ch] = m            # ours now; do not push it back
             print('  mute %d -> %d' % (ch, m))
         elif t[0] == 'pick' and len(t) >= 3:
             ch = int(t[1])

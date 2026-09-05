@@ -169,6 +169,19 @@ class AppMeters:
         except Exception:
             return 0.0
 
+    def system_muted(self):
+        try:
+            return bool(AudioUtilities.GetSpeakers().EndpointVolume.GetMute())
+        except Exception:
+            return False
+
+    def set_system_mute(self, muted):
+        try:
+            AudioUtilities.GetSpeakers().EndpointVolume.SetMute(
+                1 if muted else 0, None)
+        except Exception:
+            pass
+
     def set_system_volume(self, f):
         try:
             AudioUtilities.GetSpeakers().EndpointVolume \

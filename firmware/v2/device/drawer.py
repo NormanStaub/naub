@@ -5,14 +5,18 @@
     |           |  MUSIC    |  SPOTIFY   |  the edited column goes blank,
     |-----------............-------------|  and so does its rule -- the gap
     |        o o o O o o                 |  is what says which one you are
-    |   [ic]   [ ICON ]   [ic]           |  changing
+    |   [i]    [ICON]    [i]             |  changing
     |  SPOTIFY  .. .. .. .. ..     |     |
-    | APP CTRL  |||  SYS. ############   |  footer stays put       (page 7)
+    |------------------------------------|
+    |  APP CTRL |||        SYS. ######    |  mode bar stays put   (pages 6-7)
     +------------------------------------+
 
-One panel, 40 px tall, that slides down over the meter band (pages 2..6) from
+One panel, 32 px tall, that slides down over the meter band (pages 2..5) from
 the rule under the names.  Everything outside those pages is the mixer screen,
-untouched, so the volume bars and the footer never move.
+untouched, so the volume bars and the mode bar never move.
+
+While it slides, the leading edge carries a solid rule (see compose) -- without
+it the panel reads as content fading in rather than a surface coming down.
 
 Three moving parts, and they update at different rates, which is the whole
 reason the panel is built page by page:
@@ -20,10 +24,10 @@ reason the panel is built page by page:
   * the counter (panel page 0) -- one ring per app with live audio, filled at
     the current selection.  Redrawn only when the selection or the app list
     changes.
-  * the shelf (panel pages 1..3) -- the focused icon at 24 px flanked by its
-    neighbours at 16 px, all bottom-aligned so they zoom off a common floor.
+  * the shelf (panel pages 1..2) -- the focused icon at 16 px flanked by its
+    neighbours at 8 px, all bottom-aligned so they zoom off a common floor.
     Redrawn while scrolling.
-  * the bottom row (panel page 4) -- the selected app's name and a horizontal
+  * the bottom row (panel page 3) -- the selected app's name and a horizontal
     level meter for what THAT app is playing, with the same rise-instantly /
     settle-slowly ballistics as the mixer's bands and a peak tick riding the
     leading edge.  Redrawn every tick.
@@ -42,12 +46,12 @@ W = gfx.W
 _ZERO = bytes(W)
 
 # ---- where the panel lives -------------------------------------------------
-PANEL_P0, PANEL_P1 = 2, 6     # the mixer's meter band; the pages we take over
+PANEL_P0, PANEL_P1 = 2, 5     # the mixer's meter band; the pages we take over
 NPAGE = PANEL_P1 - PANEL_P0 + 1
-H = NPAGE * 8                 # 40 px of drop
+H = NPAGE * 8                 # 32 px of drop
 N_PLANES = 4
 
-# Panel-local y runs 0..39 (screen y = panel y + PANEL_P0 * 8).
+# Panel-local y runs 0..31 (screen y = panel y + PANEL_P0 * 8).
 
 # ---- the scroll counter (panel page 0) ------------------------------------
 # 5x5 rings, one per app with a live audio session, the current one filled.
@@ -57,32 +61,32 @@ DISC = (0x1C, 0x3E, 0x3E, 0x3E, 0x1C)
 CNT_PITCH = 7                 # 5 px ring + 2 px gap
 CNT_MAX = 17                  # more than fits; the rest are simply not drawn
 
-# ---- the icon shelf (panel pages 1..3) ------------------------------------
-# (size, panel page0).  Both tiers bottom-align on panel y31 and both sizes are
-# multiples of 8, so a blit is a byte-slice copy with no shifting.
-TIERS = ((24, 1), (16, 2))
-SHELF_P0, SHELF_P1 = 1, 3
-PITCH = 40                    # px between neighbouring slots
+# ---- the icon shelf (panel pages 1..2) ------------------------------------
+# (size, panel page0).  Both tiers bottom-align on panel y23 and both sizes are
+# multiples of 8, so a blit is a byte-slice copy with no shifting.  The two
+# pages are all the taller mode bar leaves; the zoom is carried by the 2:1 size
+# ratio rather than by absolute size.
+TIERS = ((16, 1), (8, 2))
+SHELF_P0, SHELF_P1 = 1, 2
+PITCH = 28                    # px between neighbouring slots
 CX = 64                       # the focused slot's centre
 NEAR = 0.5                    # |distance| under this = the big tier
 
-# ---- the bottom row (panel page 4) ----------------------------------------
-ROW_P = 4
+# ---- the bottom row (panel page 3) ----------------------------------------
+ROW_P = 3
 NAME_X = 1
 NAME_MAXW = 46                # names longer than this are trimmed with '..'
 BAR_GAP = 5                   # px between the name and the bar
-BAR_MASK = 0x0C               # panel y34..35: the 2px-tall dot row
-PEAK_MASK = 0x3E              # panel y33..37: the peak tick, taller than the bar
-RULE = 0x80                   # panel y39: the line above the footer
+BAR_MASK = 0x0C               # panel y26..27: the 2px-tall dot row
+PEAK_MASK = 0x3E              # panel y25..29: the peak tick, taller than the bar
 BAR_END = W - 2
+WIPE = 0xFF                   # the solid row that rides the sliding edge
 
 # Same ballistics as the mixer's bands (tuned for a ~16 ms tick): jump to any
 # new peak, settle back smoothly, and let the peak tick fall ~6x slower so it
 # detaches and hangs above the bar.
 FALL = 0.18
 PEAK_FALL = 0.028
-
-_ROW_RULE = bytes((RULE,)) * W       # clears the row AND lays the rule
 
 
 def fit(font, s, width=NAME_MAXW):
@@ -149,14 +153,13 @@ def _placeholder(size, font=None, ch=''):
 
 
 class Drawer:
-    def __init__(self, icons, catalog, font, big=None, n=N_PLANES):
+    def __init__(self, icons, catalog, font, n=N_PLANES):
         """icons[app][tier][plane] and catalog[app] come from switcher_data.py;
-        `font` draws the bottom-row name (ccfont.TINY) and `big` the initial on
-        a placeholder icon (ccfont.SML)."""
+        `font` (ccfont.TINY) draws the bottom-row name and the initial on a
+        placeholder icon -- it is the only face that fits inside a 16 px box."""
         self.icons = icons
         self.catalog = tuple(c.upper() for c in catalog)
         self.font = font
-        self.big = big
         self.n = n
         self.planes = [gfx.new() for _ in range(n)]
         self.panel = [bytearray(NPAGE * W) for _ in range(n)]
@@ -214,8 +217,9 @@ class Drawer:
         if b is None:
             # cached as a memoryview for the same reason the icons are: _blit
             # slices its source every frame, and slicing bytes allocates.
+            # The 8 px tier is too small for a letter -- a bare frame there.
             b = memoryview(_placeholder(
-                size, self.big if size >= 24 else None, key[1]))
+                size, self.font if size >= 16 else None, key[1]))
             self._ph[key] = b
         return b
 
@@ -283,11 +287,10 @@ class Drawer:
 
     def draw_row(self):
         """Name at the left, then a dot bar for that app's level with a peak
-        tick on its leading edge.  The rule above the footer comes free: the
-        row is cleared TO the rule rather than to zero."""
+        tick on its leading edge."""
         pan = self.panel[0]
         o = ROW_P * W
-        pan[o:o + W] = _ROW_RULE
+        pan[o:o + W] = _ZERO
         x = NAME_X
         if self._name is not None:
             w, buf = self._name
@@ -339,7 +342,8 @@ class Drawer:
     def compose(self, reveal):
         """Overlay the top `reveal` px of the panel onto the background.  Rows
         below it are left alone, so a half-open drawer still shows the live
-        meters underneath."""
+        meters underneath, and while it is moving the last revealed row is
+        forced solid -- the wipe's leading edge."""
         if reveal <= 0:
             return
         if reveal > H:
@@ -362,3 +366,15 @@ class Drawer:
                 dst = self.fpage[k][PANEL_P0 + full]
                 for x in range(W):
                     dst[x] = (src[x] & m) | (dst[x] & keep)
+        if reveal < H:
+            # The wipe's edge: a solid rule on the last revealed row, so the
+            # panel reads as a surface sliding over the meters rather than as
+            # content appearing out of nowhere.
+            y = reveal - 1
+            row = self.fpage
+            b = 1 << (y & 7)
+            p = PANEL_P0 + (y >> 3)
+            for k in range(self.n):
+                dst = row[k][p]
+                for x in range(W):
+                    dst[x] |= b

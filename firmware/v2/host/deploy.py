@@ -17,7 +17,7 @@ DEMOS = os.path.normpath(os.path.join(HERE, '..', 'demos'))
 # boot.py first: it only takes effect after a power cycle, and copying it is
 # harmless for the demos that do not use the data port.
 LIBS = ('boot.py', 'gfx.py', 'ccfont.py', 'st7565.py', 'naubhw.py', 'link.py',
-        'mixer.py', 'drawer.py')
+        'mixer.py', 'drawer.py', 'media.py')
 DEMO_MAP = {
     'ball':   ('demo_ball.py', ()),
     'gray':   ('demo_gray_modes.py', ('graybars.py', 'graygrad.py')),

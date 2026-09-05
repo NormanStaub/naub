@@ -1,5 +1,5 @@
-# Demo: the naub V2 mixer screen, with the app-switcher dropdown wired in as
-# the column picker.
+# Demo: the naub V2 mixer screen, with the app-switcher dropdown as the column
+# picker, the mode bar along the bottom, and the aux keys wired up.
 #
 # Runs either way:
 #   * with host/naub_bridge.py talking to it over the USB CDC data port, the
@@ -8,20 +8,30 @@
 #   * with nothing attached (or before boot.py + a power cycle enables the data
 #     port), it simulates levels so the interaction is still judgeable.
 #
-#   top-left / top-middle / top-right knobs (ENC1-3), one per column:
+#   ENC1-3 (the three top knobs), one per column:
 #       turn        set that app's volume
 #       click       open the app switcher for that column; click again to assign
 #       hold 0.6 s  mute / unmute that column
-#   lower-right knob (ENC4): system volume
+#   ENC4 (lower-right):
+#       turn        system volume
+#       click       system mute            (V1's system-channel click)
+#   BTN1 / BTN2 (the upper pair):  previous / next mode
+#   BTN3 / BTN4 / BTN5 (bottom row, left to right):
+#       |<<  >||  >>|  -- media transport, sent as USB HID so it works with no
+#       host software running at all (see device/media.py)
 #
-# The mixer screen is binary (one plane, ~390 Hz); the switcher's icons are FRC
+# Only APP CTRL is implemented; flipping to EQ / CUSTOM 1 / CUSTOM 2 moves the
+# mode bar's ticks and label, and those screens land later.  The switcher opens
+# only in APP CTRL, since that is the mode it belongs to.
+#
+# The mixer screen is binary (one plane, ~400 Hz); the switcher's icons are FRC
 # grayscale, so the frame cycles four ways while the drawer is open.  n_planes
 # follows whichever is on screen.
 #
 # Deploy: python host/deploy.py mixer
 import random
 import time
-import naubhw, ccfont, drawer, link, mixer, switcher_data
+import naubhw, ccfont, drawer, link, media, mixer, switcher_data
 
 HOLD = 0.6            # seconds held = mute rather than open the picker
 TICK_MS = 16          # meter update rate; the FALL constants are tuned to it
@@ -29,14 +39,20 @@ MARQ_MS = 140         # how often a too-long name scrolls one pixel
 DROP = 0.35           # per-frame fraction of the remaining drop distance
 EASE = 0.30           # ... and of the remaining scroll distance
 
+APP_MODE = 0          # index into mixer.MODES that owns this screen
+
 disp = naubhw.display()
 bl = naubhw.Backlight(80)
-encs = naubhw.encoders()                       # ENC1-4
-sws = naubhw.encoder_switches((0, 1, 2))       # the three column knobs
+encs = naubhw.encoders()                          # ENC1-4
+sws = naubhw.encoder_switches()                   # all four knob switches
+btns = naubhw.buttons()                           # BTN1-5
+md = media.Media()
+
+# BTN3/4/5 -- the bottom row of keyswitches, left to right.
+MEDIA = {2: media.PREV, 3: media.PLAY, 4: media.NEXT}
 
 mx = mixer.Mixer(ccfont.TINY)
-dr = drawer.Drawer(switcher_data.ICONS, switcher_data.APPS,
-                   ccfont.TINY, ccfont.SML)
+dr = drawer.Drawer(switcher_data.ICONS, switcher_data.APPS, ccfont.TINY)
 mx_views = [disp.make_views(fb) for fb in mx.planes]
 dr_views = [disp.make_views(fb) for fb in dr.planes]
 
@@ -66,14 +82,17 @@ focus = -1
 bg_dirty = True          # the mixer frame behind the panel changed
 
 last = [e.position for e in encs]
-was = [False] * mixer.NCOL
-press_t = [0.0] * mixer.NCOL
+was = [False] * len(sws)
+press_t = [0.0] * len(sws)
+bwas = [False] * len(btns)
 t_push = t_marq = time.monotonic()
 
 views = mx_views
 n_planes = len(views)      # mixer is binary (1 plane); the drawer is FRC (4)
 print("naub V2 mixer | %d columns | turn=volume click=switch hold=mute | ENC4=system"
       % mixer.NCOL)
+print("modes: %s | BTN1/2 flip | BTN3-5 media: %s"
+      % (' > '.join(mixer.MODES), "HID ready" if md.ready else "NO HID ENDPOINT"))
 print("data port: %s" % ("ready, waiting for host" if lk.ready else
                          "ABSENT - simulating (deploy boot.py + power cycle)"))
 
@@ -88,8 +107,6 @@ def gap():
 def open_drawer(c):
     global mode, sel, reveal, rev_t, pos, target, focus, views, n_planes
     mode, sel = 1, c
-    mx.preset = 'APP CTRL'
-    mx.draw_foot()
     k = dr.index_of(mx.names[c])
     if k < 0:
         k = 0
@@ -105,10 +122,18 @@ def open_drawer(c):
 def close_drawer():
     global mode, views, n_planes
     mode = 0
-    mx.preset = 'PRESET 1'
     mx.render()
     views = mx_views
     n_planes = len(views)
+
+
+def set_mode(d):
+    """Flip through the mode list.  The bar's ticks ARE the position in it, so
+    redrawing the bar is the whole transition -- there is nothing to animate."""
+    mx.mode = (mx.mode + d) % len(mixer.MODES)
+    mx.draw_foot()
+    lk.send("mode %d" % mx.mode)
+    print("mode %d %s" % (mx.mode, mixer.MODES[mx.mode]))
 
 
 i = 0
@@ -161,9 +186,16 @@ while True:
                 mx.draw_vol()
             bg_dirty = True
         elif v == 'mute' and len(t) == 3:
-            mx.mute[int(t[1])] = t[2] == '1'
-            mx.draw_vol()
+            ch = int(t[1])
+            if ch == mixer.NCOL:
+                mx.sysmute = t[2] == '1'
+                mx.draw_foot()
+            elif ch < mixer.NCOL:
+                mx.mute[ch] = t[2] == '1'
+                mx.draw_vol()
             bg_dirty = True
+        elif v == 'ping':
+            lk.send('pong')
         elif v == 'hello':
             lk.send(link.BANNER)
 
@@ -192,21 +224,28 @@ while True:
         mx.draw_foot()
         bg_dirty = True
 
-    # ---- switches: click = switch apps, hold = mute ----
-    for c in range(mixer.NCOL):
+    # ---- knob switches: ENC4 = system mute, ENC1-3 = pick / mute ----
+    for c in range(len(sws)):
         down = not sws[c].value
         if down and not was[c]:
             press_t[c] = now
         elif not down and was[c]:
-            if now - press_t[c] >= HOLD:
+            if c == mixer.NCOL:                   # ENC4: the system channel
+                mx.sysmute = not mx.sysmute
+                mx.draw_foot()
+                lk.send("mute %d %d" % (mixer.NCOL, 1 if mx.sysmute else 0))
+                bg_dirty = True
+                print("system mute %d" % mx.sysmute)
+            elif now - press_t[c] >= HOLD:
                 if mode == 0:
                     mx.mute[c] = not mx.mute[c]
                     mx.draw_vol()
                     lk.send("mute %d %d" % (c, 1 if mx.mute[c] else 0))
                     print("mute %d %d" % (c, mx.mute[c]))
             elif mode == 0:                       # open the dropdown
-                open_drawer(c)
-                bg_dirty = True
+                if mx.mode == APP_MODE:           # ... only in its own mode
+                    open_drawer(c)
+                    bg_dirty = True
             elif c == sel and rev_t:              # confirm and slide back up
                 if dr.apps:                       # nothing playing = nothing
                     nm = dr.apps[int(target)]     # to assign, but still close
@@ -217,6 +256,25 @@ while True:
                 rev_t = 0.0
                 bg_dirty = True
         was[c] = down
+
+    # ---- aux keys: BTN1/2 flip modes, BTN3-5 are media transport ----
+    # These act on PRESS, not release: a transport key that waits for the
+    # release feels laggy in a way a mute toggle does not.
+    for b in range(len(btns)):
+        down = not btns[b].value
+        if down and not bwas[b]:
+            if b == 0:
+                set_mode(-1)
+                bg_dirty = True
+            elif b == 1:
+                set_mode(1)
+                bg_dirty = True
+            else:
+                md.tap(MEDIA[b])
+                lk.send("btn %d 1" % b)
+        elif (not down) and bwas[b] and b in MEDIA:
+            lk.send("btn %d 0" % b)
+        bwas[b] = down
 
     # ---- animate ----
     if mode == 1:
@@ -283,9 +341,9 @@ while True:
 
     if frames >= 1024:
         t1 = time.monotonic()
-        print("%.1f fps (%.1f Hz per gray cycle) mode=%s vol=%s sys=%.2f" %
+        print("%.1f fps (%.1f Hz cycle) %s | %s vol=%s sys=%.2f" %
               (frames / (t1 - t0), frames / (t1 - t0) / n_planes,
-               "switcher" if mode else "mixer",
+               "switcher" if mode else "mixer", mixer.MODES[mx.mode],
                [round(v, 2) for v in mx.vol], mx.sysvol))
         frames = 0
         t0 = t1

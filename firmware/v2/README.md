@@ -11,8 +11,9 @@ device/   modules that live on the CIRCUITPY drive (pure CircuitPython)
   link.py      host<->device line protocol over the data port
   naubhw.py    board wiring: display, backlight, 4 encoders, 9 switches
   gfx.py       1-bit page framebuffer + text/icon drawing (runs on PC too)
-  mixer.py     the mixer screen: 3 columns, volume bars, 8-band dot meters
+  mixer.py     the mixer screen: 3 columns, 8-band dot meters, the mode bar
   drawer.py    the app switcher: a dropdown over the meters (pure Python too)
+  media.py     transport keys over USB HID -- no library, no host software
   ccfont.py    C&C Red Alert font (TINY h8 full ASCII, SML h16, BIG digits h27)
 demos/    ready-to-flash examples (each becomes code.py) + generated data
   demo_mixer.py       the mixer screen + the app-switcher dropdown  <- the UI
@@ -67,10 +68,11 @@ previews are pixel-exact (WYSIWYG workflow — always preview before flashing).
 | full-frame `show_pages()` @ 4 MHz | ~337 fps |
 | full-frame `show_pages()` @ 8 MHz | ~554 fps |
 | partial `span()` (16px sprite, 2 pages) @ 8 MHz | ~2200 updates/s |
-| `drawer.draw_shelf()` (4 icons, 4 planes) | 1.8 ms |
 | `drawer.compose()` open / mid-slide | 0.41 ms / 4.2 ms |
 | `mixer.draw_dots()` (24 bands + peak markers) | 1.2 ms |
-| free RAM with mixer + switcher loaded (8 apps, 2 tiers) | 360 kB |
+| whole UI, drawer open and scrolling | 390 fps (97 Hz gray cycle) |
+| whole UI, mixer screen, meter every frame | 160 fps |
+| free RAM with mixer + switcher loaded (8 apps, 2 tiers) | 358 kB |
 
 Keep hot loops allocation-free (prebuilt page commands, `make_views()`
 memoryviews, reused buffers) — GC pauses show up as visible flicker. The trap
@@ -115,21 +117,62 @@ screens from parts.
 ## The mixer screen (`mixer.py` + `demo_mixer.py`)
 
 Three app columns, each with a volume bar, a name, and a dot level meter for
-what that app is playing; a footer with the preset and system volume.
+what that app is playing, over a two-page mode bar.
 
 ```
 | ####----- | ######--- | ########## |  volume bar    page 0
 | CHROME    | MUSIC     | SPOTIFY    |  name, marquee page 1
 | -   - -   | -     -   |            |  8 bands per column, standing on
-| :   : :   | :     :   |            |  the floor and bouncing UP, each
-| : : : : : | : :   : : |            |  with its own peak marker riding
-| : : : : : | : : : : : |            |  its leading edge
-| PRESET 1  |||  SYS. ############   |  footer        page 7
+| :   : :   | :     -   |            |  the floor and bouncing UP, each
+| : : : : : | : : : : : |            |  with its own peak marker riding
+|------------------------------------|  its leading edge   pages 2-5
+|  APP CTRL |||        SYS. ######    |  mode bar      pages 6-7
 ```
 
-Knobs: the three top knobs are the three columns (turn = volume, click = open
-the app-switcher dropdown for that column, hold 0.6 s = mute); the lower-right
-knob is system volume.
+### Controls
+
+| input | action |
+|---|---|
+| ENC1-3 turn | that column's app volume |
+| ENC1-3 click | open the app switcher for that column; click again to assign |
+| ENC1-3 hold 0.6 s | mute / unmute that column |
+| ENC4 turn / click | system volume / system mute |
+| BTN1 / BTN2 | previous / next mode |
+| BTN3 / BTN4 / BTN5 | `\|<<` `>\|\|` `>>\|` — media transport, over HID |
+
+BTN3/4/5 are the bottom row of keyswitches (SW7/8/9, GP20/21/22), left to
+right. They go out as **USB HID Consumer Control**, not over the line protocol,
+so they work with no host software running — see `device/media.py` and
+PROTOCOL.md §11. Verified with a `WH_KEYBOARD_LL` hook: all three land as
+`MEDIA_PREV_TRACK` / `MEDIA_PLAY_PAUSE` / `MEDIA_NEXT_TRACK`.
+
+### The mode bar
+
+Two pages tall, so the text has room to breathe, and it names the current
+**mode** rather than a fixed preset. The `|||` between the label and `SYS.` is
+not decoration — it is the position in the mode list:
+
+```
+   APP CTRL |||          mode 1 of 4
+ | EQ        ||          mode 2
+|| CUSTOM 1   |          mode 3
+||| CUSTOM 2             mode 4
+```
+
+There is always one tick fewer than there are modes, and the current mode
+splits them: ticks left of the label are the modes behind you, ticks right the
+ones ahead. Flipping a mode redraws the bar and that is the entire transition —
+there is nothing to animate, which is why it feels instant.
+
+Only **APP CTRL** is implemented. `EQ` has its verbs defined (PROTOCOL.md §10)
+but no V2 screen yet, and `CUSTOM 1/2` are placeholders; flipping to them moves
+the ticks and the label and leaves the mixer up. The switcher opens only in
+APP CTRL, since that is the mode it belongs to.
+
+The mode bar is the one thing on this screen that is **not** page-aligned: its
+text and its system-volume bar straddle pages 6 and 7 so they sit centred in
+the taller bar, which costs a shift per column byte. That is fine — it is
+redrawn only when something in it changes, never in the frame loop.
 
 ### What Windows can and cannot tell us
 
@@ -157,7 +200,7 @@ the bottom too, so the dots stay put as a band grows instead of crawling.
 - **Ballistics** are fast-attack / slow-release on both (`mixer.FALL`,
   `mixer.PEAK_FALL`, tuned for a 16 ms tick); the peak falls ~6x slower than
   the band. That asymmetry is what makes a meter look alive rather than jittery.
-- **Height is in pixels, not rows.** A band fills any of 0..40 px, so motion
+- **Height is in pixels, not rows.** A band fills any of 0..32 px, so motion
   moves at the finest step the panel has. The dot texture comes from the *fill
   pattern* (2px lit, 2px clear) rather than from quantising the height.
 - **The spectrum is faked**, because the host can only report one amplitude per
@@ -251,7 +294,7 @@ python host/naub_bridge.py --ports   # if it cannot find the data port
 ## The app switcher (`drawer.py`)
 
 Not a separate screen: a **dropdown** that slides down out of one column's name
-slot and covers the meter band. The volume bars and the footer never move, so
+slot and covers the meter band. The volume bars and the mode bar never move, so
 you never lose your place — and the column being edited is the one whose name
 and rule are *missing*.
 
@@ -259,9 +302,10 @@ and rule are *missing*.
 | ####----- | ######--- | ########## |  volume bars stay put   page 0
 |           |  MUSIC    |  SPOTIFY   |  edited column blanked, rule gapped
 |        o o O o o                   |  scroll counter         panel page 0
-|   [ic]    [ ICON ]    [ic]         |  icon shelf             panel pages 1-3
-|  SPOTIFY  .. .. .. .. ..     |     |  name + level meter     panel page 4
-| APP CTRL  |||  SYS. ############   |  footer stays put       page 7
+|   [i]     [ICON]     [i]           |  icon shelf             panel pages 1-2
+|  SPOTIFY  .. .. .. .. ..     |     |  name + level meter     panel page 3
+|------------------------------------|
+|  APP CTRL |||        SYS. ######    |  mode bar stays put     pages 6-7
 ```
 
 - **The counter is honest.** One ring per app with a *live audio session*
@@ -272,26 +316,31 @@ and rule are *missing*.
   scroll, so you see what you are about to assign. Same fast-attack /
   slow-release ballistics as the mixer's bands, with a peak tick on the leading
   edge.
-- **Page-aligned size tiers.** `TIERS = ((24,1),(16,2))` — both a multiple of 8
+- **Page-aligned size tiers.** `TIERS = ((16,1),(8,2))` — both a multiple of 8
   and bottom-aligned on the same floor, so an icon is `fb[o:o+w] = src[s:s+w]`
   with no bit shifting. The tier comes from the *fractional* distance to the
   focus, so easing `pos` toward an integer target produces the zoom for free.
+  Two pages is all the taller mode bar leaves, so the zoom is carried by the
+  2:1 size ratio rather than by absolute size.
+- **The wipe carries a rule on its leading edge** — the last revealed row is
+  forced solid while the panel is moving, so it reads as a surface sliding over
+  the meters rather than as content appearing out of nowhere.
 - **Apps with no icon get a placeholder** — a rounded frame with the app's
   initial. The session list and the icon catalogue come from different places
   (apps making noise vs. apps with a window), so a mismatch is normal.
-- **The footer reads `APP CTRL`** while the drawer is out and `PRESET 1` when
-  it is not, because that is what the buttons do right now.
+- **The mode bar is untouched** while the drawer is out. It already reads
+  `APP CTRL`, which is the mode the switcher belongs to.
 
 The panel composites over the live mixer frame: rows above the sliding edge are
 the panel, rows below it are still the running meters, merged byte-wise on the
 one page the edge cuts through. Measured **0.41 ms** to compose an open panel
-and 4.2 ms on the frames where the edge is mid-page — so ~130 Hz of gray cycle
-when open (the `show_pages` ceiling is 142 Hz) and ~77 Hz during the slide.
+and 4.2 ms on the frames where the edge is mid-page. Measured on hardware over
+three open/scroll/close passes: **390 fps, 97 Hz of gray cycle**, steady.
 
 Regenerate the icons for whatever you have open, then flash:
 
 ```
-python host/gen_switcher.py      # -> demos/switcher_data.py (11 kB, 3.3 kB of pixels)
+python host/gen_switcher.py      # -> demos/switcher_data.py (5 kB, 1.3 kB of pixels)
 python host/preview_drawer.py    # WYSIWYG check; --live drives it from real audio
 python host/deploy.py mixer
 ```

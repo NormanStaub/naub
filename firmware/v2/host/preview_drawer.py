@@ -19,7 +19,7 @@ COLS = ('CHROME', 'SPOTIFY', 'DISCORD')
 
 
 def build(names=COLS, sel=0):
-    m = mixer.Mixer(ccfont.TINY, preset='APP CTRL')
+    m = mixer.Mixer(ccfont.TINY)
     for i, nm in enumerate(names):
         m.set_name(i, nm)
     m.vol = [0.45, 0.70, 1.0]
@@ -41,18 +41,18 @@ def shot(m, dr, sel, reveal):
 def demo_states():
     import switcher_data
     m = build()
-    dr = drawer.Drawer(switcher_data.ICONS, switcher_data.APPS,
-                       ccfont.TINY, ccfont.SML)
+    dr = drawer.Drawer(switcher_data.ICONS, switcher_data.APPS, ccfont.TINY)
     dr.set_apps(('SPOTIFY', 'CHROME', 'DISCORD', 'FIREFOX', 'CLAUDE'))
     dr.set_focus(0)
     sel = 0
 
-    # opening: the meters below the panel edge are still live
-    for r in (10, 24):
+    # opening: the meters below the panel edge are still live, and the wipe's
+    # leading edge carries a solid rule
+    for r in (9, 20):
         dr.lvl, dr.pk = 0.70, 0.86
         dr.draw_shelf(0.0)
         dr.draw_row()
-        yield shot(m, dr, sel, r), 'sliding down (%d px)' % r
+        yield shot(m, dr, sel, r), 'sliding down (%d px) -- note the edge rule' % r
 
     # settled on the first app
     for _ in range(20):
@@ -63,7 +63,7 @@ def demo_states():
 
     # mid-scroll, between two apps
     dr.draw_shelf(1.45)
-    yield shot(m, dr, sel, drawer.H), 'scrolling: 24px focus, 16px neighbours'
+    yield shot(m, dr, sel, drawer.H), 'scrolling: 16px focus, 8px neighbours'
 
     # settled on an app we have no icon for -> placeholder with its initial
     dr.set_focus(3)
@@ -79,8 +79,7 @@ def live():
     src = appmeter.AppMeters()
     cols = [n.upper() for n in src.top(mixer.NCOL)]
     m = build(cols)
-    dr = drawer.Drawer(switcher_data.ICONS, switcher_data.APPS,
-                       ccfont.TINY, ccfont.SML)
+    dr = drawer.Drawer(switcher_data.ICONS, switcher_data.APPS, ccfont.TINY)
     apps = [k.upper() for k in src.active()] or ['']
     dr.set_apps(apps)
     dr.set_focus(0)

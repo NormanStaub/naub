@@ -237,6 +237,8 @@ ignored). Implemented in `firmware/v2/device/link.py` and
 | `apps <A,B,C>` | H→D | Every app with a **live audio session**, in the host's preference order — the app switcher's list, and what its counter counts. **Comma** separated, because process names can contain spaces. An empty list is legal and means nothing is playing. |
 | `ameter <v0> <v1> …` | H→D | One level per entry of the last `apps` list, 0–100, pushed at the same rate. The switcher meters whichever entry is under the scroll. |
 | `pick <ch> <APP>` | D→H | The user assigned `<APP>` to column `<ch>` from the switcher. The host **pins** that column: it stops reassigning it as the busiest sessions churn. |
+| `mode <idx>` | D→H | The mode bar was flipped (BTN1 back, BTN2 forward). `<idx>` indexes the device's mode list — `APP CTRL`, `EQ`, `CUSTOM 1`, `CUSTOM 2`. Informational: the device owns which mode it is in. |
+| `btn <n> <0|1>` | D→H | An aux key changed state. V2 reports it **momentary** (1 on press, 0 on release), not V1's latch, because the keys it is used for are transport keys. |
 
 **Why levels are a separate verb from `level`.** `level` is a *volume* (where
 the knob sits); `meter`/`ameter` are *amplitudes* (what is coming out). They
@@ -252,6 +254,44 @@ endpoint mix. The device's 8-band display is therefore a fake spread of the one
 amplitude per app, generated on-device; the wire only ever carries one number
 per source.
 
+**Channel 3 is the system endpoint, for mute as well as volume.** Clicking the
+system knob sends `mute 3 <0|1>` and the host applies it to the default output
+device, not to a session — symmetric with `level 3` / `vol 3`.
+
 **Who owns the column names.** The host, except where the device pinned one
 with `pick`. Without the pin, a hand-picked column would be overwritten the
 next time the most-active-sessions list changed.
+
+### Media transport is HID, not this protocol
+
+The three bottom keyswitches (BTN3/4/5 → `|<<`, `>||`, `>>|`) are sent as **USB
+HID Consumer Control** usages — `SCAN_PREV 0xB6`, `PLAY_PAUSE 0xCD`,
+`SCAN_NEXT 0xB5` — exactly as §1 says system volume is. They therefore work
+with **no host software running at all**, on the lock screen, in a browser, in
+a game, and whichever app Windows currently considers the media session picks
+them up. `btn 3|4|5` still goes out on the wire, but purely as telemetry: a
+host that ignores it loses nothing.
+
+CircuitPython exposes the Consumer Control endpoint by default and its report
+is just the usage ID as a little-endian `uint16`, `0` meaning released, so
+`firmware/v2/device/media.py` needs no HID library. Verified end to end with a
+`WH_KEYBOARD_LL` hook: all three arrive as `MEDIA_PREV_TRACK` /
+`MEDIA_PLAY_PAUSE` / `MEDIA_NEXT_TRACK`.
+
+### What V2 does *not* carry over from V1
+
+Two V1 verbs are deliberately unimplemented on V2, because the new UI does the
+same job better:
+
+- **`icon` / `iconclear`.** V1 pushed a 32×32 1-bpp icon per channel over the
+  wire. V2 bakes every app's icon into `demos/switcher_data.py` at build time,
+  FRC-encoded per size tier, so the switcher can blit it as a byte-slice copy.
+  Pushing the same data over CDC would be ~3 kB per app and slower to draw.
+- **`cycle <ch> <dir>`.** V1's hold-and-turn source reassignment is replaced by
+  the app switcher: click a knob, scroll the shelf, click to assign, and the
+  device reports the result as `pick`. The host no longer has to own a source
+  list and drive the choice blind.
+
+Everything else V1 spoke — `hello`, `ping`/`pong`, `label`, `level`, `mute`,
+`vol`, `btn`, the banner — V2 speaks. `eq`/`eqset` (§10) are defined and the
+mode bar has a slot for them; the V2 EQ screen itself is not built yet.
