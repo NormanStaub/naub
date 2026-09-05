@@ -137,6 +137,7 @@ t_push = t_marq = t_wipe = time.monotonic()
 
 views = mx_views
 n_planes = len(views)      # mixer is binary (1 plane); the drawer is FRC (4)
+i = 0                      # which plane is being shown; see set_screen()
 print("naub V2 mixer | %d columns | turn=volume click=switch hold=mute | ENC4=system"
       % mixer.NCOL)
 print("modes: %s | BTN1/2 flip | BTN3-5 media: %s"
@@ -189,6 +190,21 @@ def sync_foot():
     eq_scr.planes[0][o:o + 128] = mx.planes[0][o:o + 128]
 
 
+def set_screen(v):
+    """Point the frame loop at a screen.
+
+    `views`, `n_planes` and the plane counter `i` MUST change together: the
+    loop shows views[i] and advances i until it reaches n_planes, so a screen
+    swap that leaves i behind indexes past the end of the new list.  That is
+    not hypothetical -- it crashed with i=4 against a 1-plane screen, which is
+    the drawer's four FRC planes outliving the drawer.  Everything that changes
+    screens goes through here."""
+    global views, n_planes, i
+    views = v
+    n_planes = len(v)
+    i = 0
+
+
 def gap():
     """The name cell the dropdown hangs out of: blanked, rule and all, while
     the panel is out.  Once a pick is confirmed (rev_t back to 0) the new name
@@ -197,7 +213,7 @@ def gap():
 
 
 def open_drawer(c):
-    global mode, sel, reveal, rev_t, pos, target, focus, views, n_planes
+    global mode, sel, reveal, rev_t, pos, target, focus
     mode, sel = 1, c
     k = dr.index_of(mx.names[c])
     if k < 0:
@@ -207,16 +223,14 @@ def open_drawer(c):
     dr.set_focus(k)
     dr.draw_shelf(pos)
     reveal, rev_t = 0.0, float(drawer.H)
-    views = dr_views
-    n_planes = len(views)
+    set_screen(dr_views)
 
 
 def close_drawer():
-    global mode, views, n_planes
+    global mode
     mode = 0
     mx.render()
-    views = screen_views()
-    n_planes = len(views)
+    set_screen(screen_views())
 
 
 def screen_views():
@@ -257,7 +271,7 @@ def flip_mode(d):
     """Flip through the mode list.  The ticks wipe across to their new side and
     push the label along with them; bar_moving keeps stepping that until it
     settles."""
-    global bar_moving, views, n_planes, eq_ys
+    global bar_moving, eq_ys
     was_eq = mx.mode == EQ_MODE
     bar_moving = mx.set_mode(mx.mode + d)
     lk.send("mode %d" % mx.mode)
@@ -270,14 +284,25 @@ def flip_mode(d):
     # snapshot what is on screen now, then wipe to what the new mode draws
     tr.start(eq_scr.planes[0] if was_eq else mx.planes[0],
              eq_scr.planes[0] if mx.mode == EQ_MODE else mx.planes[0])
-    views = tr_views
-    n_planes = 1
+    set_screen(tr_views)
 
 
-i = 0
 frames = 0
+guard_hit = False
 t0 = time.monotonic()
 while True:
+    if i >= n_planes:
+        # set_screen() keeps this from happening, and a 9700-transition soak
+        # never tripped it -- but the observed failure was exactly this state
+        # (i=4 against a 1-plane screen) and its symptom is the whole panel
+        # going dark, so it is worth a comparison per frame.  Reported once:
+        # if it ever fires, the invariant has a hole worth finding.
+        if not guard_hit:
+            guard_hit = True
+            print("PLANE GUARD: i=%d n_planes=%d len(views)=%d mode=%d "
+                  "mx.mode=%d -- please report this line"
+                  % (i, n_planes, len(views), mode, mx.mode))
+        i = 0
     disp.show_pages(views[i])
     i += 1
     frames += 1
@@ -536,8 +561,7 @@ while True:
         o = mixer.PAGE_FOOT * mixer.W          # the mode bar is not wiped
         tr_fb[o:o + mixer.W] = mx.planes[0][o:o + mixer.W]
         if not tr.step(tr_fb):
-            views = screen_views()
-            n_planes = len(views)
+            set_screen(screen_views())
 
     if frames >= 1024:
         t1 = time.monotonic()
