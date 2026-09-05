@@ -8,29 +8,32 @@
     |   [ic]     [ ICON ]     [ic]       |  changing
     | o o o O o  [ ICON ]     .. .. |    |
     |------------------------------------|
-    |  APP CTRL |||        SYS. ######    |  mode bar stays put   (pages 6-7)
+    | APP CTRL |||       SYS. #########   |  mode bar stays put   (page 7)
     +------------------------------------+
 
-One panel, 32 px tall, that slides down over the meter band (pages 2..5) from
+One panel, 40 px tall, that slides down over the meter band (pages 2..6) from
 the rule under the names.  Everything outside those pages is the mixer screen,
 untouched, so the volume bars and the mode bar never move.
 
 While it slides, the leading edge carries a solid rule (see compose) -- without
 it the panel reads as content fading in rather than a surface coming down.
 
-Four pages is not much, and the layout is what buys the icons their size back:
+Five pages is not much, and the layout is what buys the icons their size back:
 
   * the name (panel page 0) gets the WHOLE WIDTH.  It is the selected app's
     name, not a column heading, so nothing needs to share the row with it and
     a long name has the full 128 px before it has to be trimmed.
-  * the shelf (panel pages 1..3) is TOP-aligned, not bottom-aligned: every tier
+  * the shelf (panel pages 1..4) is TOP-aligned, not bottom-aligned: every tier
     starts on the same page and the focused one simply reaches further down.
-    That is what lets the focus be 24 px while its neighbours are 16 px inside
-    a band that is only three pages tall.
-  * the counter and the level meter (panel page 3) FLANK the focused icon
+    That is what lets the focus be 32 px while its neighbours are 24 px inside
+    a band that is only four pages tall.
+  * the counter and the level meter (panel page 4) FLANK the focused icon
     rather than sitting under it -- markers to its left, level to its right, in
     the very row the tall icon is using.  A row of their own would have cost
-    the shelf a third of its height.
+    the shelf a quarter of its height.
+  * the last row of that page is the RULE above the mode bar, laid across the
+    full width once everything else is drawn.  The focused icon's bottom row
+    lands on it, so the icon reads as standing on the line.
 
 The icons are 4-plane FRC grayscale (host/gen_switcher.py), so the whole frame
 cycles four ways while the drawer is open.  Only the icons are part-duty: the
@@ -46,45 +49,47 @@ W = gfx.W
 _ZERO = bytes(W)
 
 # ---- where the panel lives -------------------------------------------------
-PANEL_P0, PANEL_P1 = 2, 5     # the mixer's meter band; the pages we take over
+PANEL_P0, PANEL_P1 = 2, 6     # the mixer's meter band; the pages we take over
 NPAGE = PANEL_P1 - PANEL_P0 + 1
-H = NPAGE * 8                 # 32 px of drop
+H = NPAGE * 8                 # 40 px of drop
 N_PLANES = 4
 
-# Panel-local y runs 0..31 (screen y = panel y + PANEL_P0 * 8).
+# Panel-local y runs 0..39 (screen y = panel y + PANEL_P0 * 8).
 
 # ---- the selected app's name (panel page 0) --------------------------------
 NAME_P = 0
 NAME_MAXW = W - 6             # the whole width, less a margin either side
 
-# ---- the icon shelf (panel pages 1..3) ------------------------------------
+# ---- the icon shelf (panel pages 1..4) ------------------------------------
 # (size, panel page0).  Both tiers start on panel page 1 -- TOP-aligned, so the
 # focused icon grows downward into the counter row instead of needing a taller
 # band.  Both sizes are multiples of 8, so a blit is a byte-slice copy.
-TIERS = ((24, 1), (16, 1))
-SHELF_P0, SHELF_P1 = 1, 3
+TIERS = ((32, 1), (24, 1))
+SHELF_P0, SHELF_P1 = 1, 4
 PITCH = 42                    # px between neighbouring slots: exactly 3 visible
 CX = 64                       # the focused slot's centre
-NEAR = 0.30                   # |distance| under this = the big tier.  Kept
-                              # tight so the 24px icon never reaches the
-                              # counter or the level meter beside it.
+NEAR = 0.18                   # |distance| under this = the big tier.  Kept
+                              # tight so the 32px icon never reaches the
+                              # counter or the level meter beside it: at the
+                              # threshold it has slid only NEAR*PITCH = 7px.
 
-# ---- counter + level, sharing panel page 3 with the tall icon --------------
-ROW_P = 3
+# ---- counter + level, sharing panel page 4 with the tall icon --------------
+ROW_P = 4
 CNT_X = 1                     # scroll counter: one marker per app, to the LEFT
-CNT_END = 38                  # ... of the focused icon
-LVL_X = 90                    # level meter, to its RIGHT
+CNT_END = 40                  # ... of the focused icon
+LVL_X = 88                    # level meter, to its RIGHT
 LVL_END = W - 2
+RULE = 0x80                   # panel y39: the line above the mode bar
 
-RING = (0x1C, 0x22, 0x22, 0x22, 0x1C)     # 5px hollow marker, panel y26..y30
-DISC = (0x1C, 0x3E, 0x3E, 0x3E, 0x1C)     # ... filled: the current selection
+RING = (0x0E, 0x11, 0x11, 0x11, 0x0E)     # 5px hollow marker, panel y33..y37
+DISC = (0x0E, 0x1F, 0x1F, 0x1F, 0x0E)     # ... filled: the current selection
 RING_W, RING_PITCH = 5, 7
-SMALL = (0x1C, 0x14, 0x1C)                # 3px, for when 5px will not fit
-SDISC = (0x1C, 0x1C, 0x1C)
+SMALL = (0x0E, 0x0A, 0x0E)                # 3px, for when 5px will not fit
+SDISC = (0x0E, 0x0E, 0x0E)
 SMALL_W, SMALL_PITCH = 3, 4
 
-BAR_MASK = 0x18               # panel y27..28: the 2px-tall dot row
-PEAK_MASK = 0x3E              # panel y26..30: the peak tick, taller than the bar
+BAR_MASK = 0x0C               # panel y34..35: the 2px-tall dot row
+PEAK_MASK = 0x1F              # panel y33..37: the peak tick, taller than the bar
 
 # Same ballistics as the mixer's bands (tuned for a ~16 ms tick): jump to any
 # new peak, settle back smoothly, and let the peak tick fall ~6x slower so it
@@ -172,6 +177,7 @@ class Drawer:
         # 0.41 ms through views, and the allocation means GC, which is flicker.
         self.mv = [[[memoryview(b) for b in tier] for tier in app]
                    for app in icons]
+        self._check(icons)
         self.pmv = [memoryview(pan) for pan in self.panel]
         self.ppage = [[mv[p * W:(p + 1) * W] for p in range(NPAGE)]
                       for mv in self.pmv]
@@ -183,6 +189,25 @@ class Drawer:
         self.pk = 0.0
         self._name = None
         self.set_apps(self.catalog)
+
+    @staticmethod
+    def _check(icons):
+        """Fail loudly if the icon blocks were generated for different TIERS.
+
+        Worth doing at construction because the failure downstream is awful: on
+        the device _blit runs off the end of a short block and raises
+        IndexError from inside the frame loop, while on CPython the same short
+        slice assignment silently RESIZES the destination bytearray -- so the
+        PC preview looks fine and only the panel breaks."""
+        for a, app in enumerate(icons):
+            for t, (size, _) in enumerate(TIERS):
+                want = (size >> 3) * size
+                got = len(app[t][0])
+                if got != want:
+                    raise ValueError(
+                        'icon data is for different tiers: app %d tier %d is '
+                        '%d bytes, TIERS %r wants %d -- re-run '
+                        'host/gen_switcher.py' % (a, t, got, TIERS, want))
 
     # ---- what is in the list ---------------------------------------------
     def set_apps(self, names):
@@ -248,6 +273,12 @@ class Drawer:
                 for k in range(self.n):
                     _blit(self.panel[k], self._icon(i, t, k), size, p0, x)
             i += 1
+        # The rule the mode bar sits under: laid across the whole width, over
+        # the icon too, so it never breaks where the tall one stands.
+        o = ROW_P * W
+        for pan in self.panel:
+            for x in range(o, o + W):
+                pan[x] |= RULE
         self.draw_counter()
         self.draw_level()
 
@@ -291,7 +322,7 @@ class Drawer:
         pan = self.panel[0]
         o = ROW_P * W
         for x in range(o + CNT_X, o + CNT_END):
-            pan[x] = 0
+            pan[x] = RULE
         n = len(self.apps)
         if n:
             avail = CNT_END - CNT_X
@@ -318,7 +349,7 @@ class Drawer:
         pan = self.panel[0]
         o = ROW_P * W
         for x in range(o + LVL_X, o + W):
-            pan[x] = 0
+            pan[x] = RULE
         avail = LVL_END - LVL_X
         fill = int(self.lvl * avail + 0.5)
         if fill > avail:

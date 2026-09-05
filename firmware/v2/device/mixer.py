@@ -1,26 +1,31 @@
 """The naub V2 mixer screen: three app columns, each with a volume bar, a name
-and a dot level meter for what that app is playing, over a two-page mode bar.
+and a dot level meter for what that app is playing, over a one-page mode bar.
 
     +------------------------------------+
-    | ####----- | ######--- | ########## |  volume bar   (page 0)
+    | ####----- | ######--- | ########## |  volume bar    (page 0)
     | CHROME    | MUSIC     | SPOTIFY    |  name, marquee (page 1)
-    | -   - -   | -     -   |            |  8 bands per column, standing on
+    | -   - -   | -     -   |            |  7 bands per column, standing on
     | :   : :   | :     -   |            |  the floor and bouncing UP, each
     | : : : : : | : : : : : |            |  with its own peak marker riding
-    |------------------------------------|  its leading edge   (pages 2-5)
-    |  APP CTRL |||        SYS. ######    |  mode bar     (pages 6-7)
+    |------------------------------------|  its leading edge   (pages 2-6)
+    | APP CTRL |||       SYS. #########   |  mode bar      (page 7)
     +------------------------------------+
 
-A mixer meter: eight bands per app rise from the bottom, each with a short line
+A mixer meter: seven bands per app rise from the bottom, each with a short line
 at its leading edge -- the peak hold, which jumps straight to any new peak and
 then settles back smoothly when the signal drops.
 
-The bar along the bottom is two pages tall so its text has room to breathe, and
-it names the current MODE rather than a fixed preset.  The `|||` beside the
-label is not decoration: it is the position in the mode list.  There is always
-one tick fewer than there are modes, and the current mode splits them -- ticks
-to the LEFT of the label are the modes behind you, ticks to the RIGHT the ones
-ahead, so `|| CUSTOM 1 |` reads as third of four at a glance.
+Both text bars are exactly one page tall, each with its rule on the row that
+divides it from the meter: the names bar carries its rule at the bottom of its
+own page (y15), the mode bar takes the last row of the meter band (y55).  That
+is why the meter's scratch clears its final page TO the rule -- the line above
+the mode bar then costs nothing.
+
+The bottom bar names the current MODE rather than a fixed preset, and the `|||`
+beside the label is not decoration: it is the position in the mode list.  There
+is always one tick fewer than there are modes, and the current mode splits them
+-- ticks to the LEFT of the label are the modes behind you, ticks to the RIGHT
+the ones ahead, so `|| CUSTOM 1 |` reads as third of four at a glance.
 
 The ticks sit on a FIXED LATTICE and never move to accommodate the text, which
 is the whole point of them: a position indicator that shifted with the length
@@ -52,12 +57,8 @@ meter affordable in Python:
     and the separators live in the 1px gaps BETWEEN columns where the hot path
     never touches them -- chrome is drawn once, at construction;
   * names render once into a one-page gfx.text_strip() and the marquee is a
-    byte-slice window into it, so scrolling a long name costs nothing.
-
-The mode bar is the one thing that is NOT page-aligned -- its text and its
-volume bar straddle pages 6 and 7 so they can sit centred in the taller bar.
-That costs a shift per column byte, which is fine: the bar is redrawn only when
-something in it changes, never in the frame loop.
+    byte-slice window into it, so scrolling a long name costs nothing.  Both
+    text bars being one page tall is what allows that: a strip IS a page.
 
 This screen is drawn PURE BINARY: every element is fully inked or absent, and
 a part-duty area of any size visibly flickers.  Being binary also means one
@@ -79,53 +80,55 @@ SEPX = (42, 85)
 
 PAGE_VOL = 0                  # volume bars
 PAGE_NAME = 1                 # app names (+ the rule under them)
-DOT_P0, DOT_P1 = 2, 5         # meter band
+DOT_P0, DOT_P1 = 2, 6         # meter band
 NPAGE = DOT_P1 - DOT_P0 + 1
-FOOT_P0, FOOT_P1 = 6, 7       # the mode bar, two pages tall
+PAGE_FOOT = 7                 # the mode bar, one page like the names bar
 
-VOL_MASK = 0x7E               # y1..y6 within page 0: the filled bar
+VOL_MASK = 0x7E               # y1..y6 within a page: a filled bar
 VOL_OUTLINE = 0x42            # y1 and y6 only: the same bar, muted
 VOL_BASE = 0x40               # y6 only: the empty part of the track
 RULE_MASK = 0x80              # bottom row of a page, for horizontal rules
 SPACING = 0                   # ccfont.TINY advances already carry side bearing;
                               # 1px more would push most app names into a marquee
 
-# ---- the mode bar (pages 6-7) ---------------------------------------------
-# Everything here is quoted as a screen row and split across the two pages by
-# hand, because centring inside a 16px bar means nothing lands on a boundary.
+# ---- the mode bar (page 7) -------------------------------------------------
 MODES = ('APP CTRL', 'EQ', 'CUSTOM 1', 'CUSTOM 2')
 
-FOOT_RULE = 0x01              # y48: the line that closes the meter band
-FOOT_TEXT_Y = 53              # top row of the label; 6px caps -> y53..y58
-_TSHIFT = FOOT_TEXT_Y & 7     # = 5: page 6 takes (b << 5), page 7 takes (b >> 3)
-
-TICK_P6 = 0xFC                # y50..y55 | one mode tick: a stroke taller than
-TICK_P7 = 0x7F                # y56..y62 | the caps, like a cabinet divider
+TICK_MASK = 0xFF              # the full height of the bar: the ticks hang off
+                              # the rule like cabinet dividers
+FOOT_SHIFT = 1                # push the label down a row so it clears the rule
+                              # above it, mirroring the 1px the names bar
+                              # leaves above ITS rule.  TINY's caps live in
+                              # rows 0..5, so shifting by one still fits.
 TICK_PITCH = 3                # 1px stroke + 2px gap: the space one tick owns
 TICK_X = 1                    # the left lattice starts here
 TICK_GAP = 4                  # px between the label field and the right lattice
 TICK_EASE = 0.28              # per-frame fraction of the remaining crossing
 TICK_SNAP = 0.01              # ... below which it is simply done
 
-SYS_P6 = 0xE0                 # y53..y55 | the system volume bar, level with
-SYS_P7 = 0x07                 # y56..y58 | the caps
-SYSTOP_P6 = 0x20              # y53 only  | muted: the same bar, hollow
-SYSBASE_P7 = 0x04             # y58 only  | the empty part of the track
 SYS_BARW = 34
 SYS_PAD = 2
 
 # ---- meter -----------------------------------------------------------------
-# Each app column is 8 bands across (2px wide, 5px pitch), and each band stands
-# on the floor of the band and grows UP.
+# Each app column is 7 bands across, and each band stands on the floor of the
+# band and grows UP.
 #
-# Height is in PIXELS, not dot rows: a band's fill is any of 0..32, so the
+# The band run is CENTRED in its column, which constrains the numbers: the run
+# is (NBAND-1) * BAND_PITCH + BAND_W wide and the leftover has to be even for
+# the margins to match.  7 bands at pitch 6 span 38 of the 42px column, so the
+# margin is exactly 2 either side.  (8 bands at pitch 5 span 37, leaving an odd
+# 5 -- that is what made the old meter look adrift in its column.)
+#
+# Height is in PIXELS, not dot rows: a band's fill is any of 0..40, so the
 # ballistics move at the finest step the panel has.  The dot texture comes from
 # the pattern (2px lit, 2px clear) rather than from quantising the height, so
 # the meter still reads as a dot matrix while moving smoothly.
-NBAND = 8
-BANDX = tuple(1 + i * 5 for i in range(NBAND))
+NBAND = 7
+BAND_PITCH = 6
 BAND_W = 2                    # px wide
-METER_H = NPAGE * 8           # 32 px of travel
+BAND_X0 = (COLW - ((NBAND - 1) * BAND_PITCH + BAND_W)) // 2
+BANDX = tuple(BAND_X0 + i * BAND_PITCH for i in range(NBAND))
+METER_H = NPAGE * 8           # 40 px of travel
 PEAK_W = 4                    # peak marker overhangs its band, so it reads as
 PEAK_DX = -1                  # a line rather than another dot
 
@@ -141,9 +144,11 @@ PEAK_FALL = 0.028
 # material is) times a per-band random walk.  The walk is smoothed rather than
 # re-rolled each frame, so bands drift and bounce independently instead of
 # flickering like static.
-TILT = (1.0, 0.98, 0.95, 0.90, 0.84, 0.77, 0.68, 0.58)
+TILT = (1.0, 0.97, 0.93, 0.87, 0.79, 0.70, 0.59)
 NOISE_KEEP = 0.82             # how much of last frame's wander is retained
 NOISE_GAIN = 0.55             # how far a band can stray from the tilt
+
+_RULE_ROW = bytes((RULE_MASK,)) * COLW    # clears a page AND lays the rule
 
 
 def _band_pages(h):
@@ -174,8 +179,8 @@ class Mixer:
         self.modes = tuple(modes)
         self.mode = mode
         # The label field is as wide as the longest mode name, and the right
-        # lattice starts past the field's widest possible reach -- so no tick
-        # position depends on which mode is showing.
+        # lattice starts past the field -- so no tick position depends on which
+        # mode is showing.
         self._label_w = max(gfx.measure(font, m, SPACING) for m in self.modes)
         self._tick_rx = TICK_X + self._label_w + TICK_GAP
         # Strips built once: draw_foot runs every frame while the ticks are
@@ -199,8 +204,7 @@ class Mixer:
         self.bpeak = [[0.0] * NBAND for _ in range(NCOL)]
         self._noise = [[0.0] * NBAND for _ in range(NCOL)]
         self._scratch = bytearray(NPAGE * COLW)
-        self._f6 = bytearray(W)          # the mode bar, built a page at a time
-        self._f7 = bytearray(W)
+        self._foot = bytearray(W)        # the mode bar, built a row at a time
         self.chrome()
 
     # ---- static furniture (draw once) ------------------------------------
@@ -278,12 +282,16 @@ class Mixer:
     def draw_dots(self):
         # No band clear and no chrome restore: the scratch fully overwrites
         # every byte of a column, and the separators live outside the columns.
+        # The last page is cleared to the rule row, so the line above the mode
+        # bar comes for free.
         scratch = self._scratch
         mv = memoryview(scratch)
         blank = _ZERO[:COLW]
+        last = NPAGE - 1
         for c in range(NCOL):
-            for i in range(NPAGE):                   # one column's worth
+            for i in range(last):                    # one column's worth
                 scratch[i * COLW:(i + 1) * COLW] = blank
+            scratch[last * COLW:] = _RULE_ROW
             bands = self.band[c]
             peaks = self.bpeak[c]
             for b in range(NBAND):
@@ -341,7 +349,7 @@ class Mixer:
             a = o + x
             for k in self._ink:
                 self.planes[k][a:a + n] = src
-        for k in self._ink:                               # restore the rule + seps
+        for k in self._ink:                               # restore rule + seps
             fb = self.planes[k]
             for x in range(W):
                 fb[o + x] |= RULE_MASK
@@ -367,30 +375,10 @@ class Mixer:
                     fb[o + x] |= VOL_BASE
 
     # ---- the mode bar ----------------------------------------------------
-    def _text(self, x, strip):
-        """Draw a prebuilt TINY strip into the mode bar at column x, straddling
-        the two pages so it sits centred rather than jammed against a
-        boundary."""
-        w, buf = strip
-        f6 = self._f6
-        f7 = self._f7
-        for i in range(w):
-            if x + i >= W:
-                break
-            b = buf[i]
-            f6[x + i] |= (b << _TSHIFT) & 0xFF
-            f7[x + i] |= b >> (8 - _TSHIFT)
-
-    def _tick(self, x):
-        if 0 <= x < W:
-            self._f6[x] |= TICK_P6
-            self._f7[x] |= TICK_P7
-
     def set_mode(self, i):
         """Point the ticks at mode i.  They ease there; call step_foot() until
         it returns False."""
-        n = len(self.modes)
-        self.mode = i % n
+        self.mode = i % len(self.modes)
         return self.step_foot()
 
     def step_foot(self):
@@ -410,16 +398,22 @@ class Mixer:
         self.draw_foot()
         return moving
 
+    def _text(self, x, strip):
+        """OR a prebuilt TINY strip into the mode bar row at column x, one row
+        down so it does not touch the rule above."""
+        w, buf = strip
+        row = self._foot
+        for i in range(w):
+            if x + i >= W:
+                break
+            row[x + i] |= (buf[i] << FOOT_SHIFT) & 0xFF
+
     def draw_foot(self):
         """The mode bar: position ticks either side of the mode name, then the
         system volume.  Cheap enough to run per frame while the ticks cross,
         but otherwise only redrawn when something changes."""
-        f6 = self._f6
-        f7 = self._f7
-        f6[:] = _ZERO
-        f7[:] = _ZERO
-        for x in range(W):                       # the line closing the meter
-            f6[x] |= FOOT_RULE
+        row = self._foot
+        row[:] = _ZERO
 
         # Think of it as n slots in a row: n-1 hold a tick and one holds the
         # label, and advancing a mode swaps the label with the tick on its
@@ -434,7 +428,9 @@ class Mixer:
             slid += c
             lx = TICK_X + j * TICK_PITCH               # its home on the left
             rx = self._tick_rx + j * TICK_PITCH        # ... and on the right
-            self._tick(int(rx + (lx - rx) * c + 0.5))
+            t = int(rx + (lx - rx) * c + 0.5)
+            if 0 <= t < W:
+                row[t] |= TICK_MASK
         self._text(TICK_X + int(slid * TICK_PITCH + 0.5), self._mstrip[i])
 
         sw = self._sysstrip[0]
@@ -443,23 +439,15 @@ class Mixer:
         fill = int(self.sysvol * SYS_BARW + 0.5)
         if fill > SYS_BARW:
             fill = SYS_BARW
-        if self.sysmute:                          # hollow, like a muted column
-            for x in range(bx, bx + fill):
-                f6[x] |= SYSTOP_P6
-                f7[x] |= SYSBASE_P7
-        else:
-            for x in range(bx, bx + fill):
-                f6[x] |= SYS_P6
-                f7[x] |= SYS_P7
+        m = VOL_OUTLINE if self.sysmute else VOL_MASK
+        for x in range(bx, bx + fill):
+            row[x] |= m
         for x in range(bx + fill, W):
-            f7[x] |= SYSBASE_P7
+            row[x] |= VOL_BASE
 
-        o6 = FOOT_P0 * W
-        o7 = FOOT_P1 * W
+        o = PAGE_FOOT * W
         for k in self._ink:
-            fb = self.planes[k]
-            fb[o6:o6 + W] = f6
-            fb[o7:o7 + W] = f7
+            self.planes[k][o:o + W] = row
 
     def render(self):
         self.draw_vol()

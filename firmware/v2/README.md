@@ -32,6 +32,7 @@ host/     PC-side tools (Python 3 + Pillow, pyserial optional)
   gen_font.py     TTF -> ccfont.py (extract repo-root c_c_red_alert_inet.zip
                   into host/font_src/ first)
   preview_mixer.py / preview_drawer.py / preview_gray.py      previews
+  preview_fonts.py  candidate faces at 6px caps -> fonts_preview.png
   draw_logos.py / gen_icon.py                                 binary icons
 ```
 
@@ -122,12 +123,20 @@ what that app is playing, over a two-page mode bar.
 ```
 | ####----- | ######--- | ########## |  volume bar    page 0
 | CHROME    | MUSIC     | SPOTIFY    |  name, marquee page 1
-| -   - -   | -     -   |            |  8 bands per column, standing on
+| -   - -   | -     -   |            |  7 bands per column, standing on
 | :   : :   | :     -   |            |  the floor and bouncing UP, each
 | : : : : : | : : : : : |            |  with its own peak marker riding
-|------------------------------------|  its leading edge   pages 2-5
-|  APP CTRL |||        SYS. ######    |  mode bar      pages 6-7
+|------------------------------------|  its leading edge   pages 2-6
+| APP CTRL |||       SYS. #########   |  mode bar      page 7
 ```
+
+**Both text bars are exactly one page tall**, each carrying its rule on the row
+that divides it from the meter: the names bar has its rule at the bottom of its
+own page (y15), the mode bar takes the last row of the meter band (y55). That
+is why `draw_dots` clears the meter's final page *to* the rule — the line above
+the mode bar then costs nothing. The mode bar's label is pushed down one row
+(`FOOT_SHIFT`) so it clears that rule, mirroring the 1 px the names bar leaves
+above its own.
 
 ### Controls
 
@@ -213,7 +222,7 @@ music sit low in the range, so `appmeter.levels()` applies a gentle curve
 
 ### The meter
 
-Each column is a **mixer meter with 8 bands**. Every band stands on the floor,
+Each column is a **mixer meter with 7 bands**. Every band stands on the floor,
 rises with its share of the level, and carries a short line at its leading edge
 — the **peak hold**, which jumps straight to any new peak and then settles back
 down smoothly, detaching from the falling band. The dot texture is anchored to
@@ -222,7 +231,13 @@ the bottom too, so the dots stay put as a band grows instead of crawling.
 - **Ballistics** are fast-attack / slow-release on both (`mixer.FALL`,
   `mixer.PEAK_FALL`, tuned for a 16 ms tick); the peak falls ~6x slower than
   the band. That asymmetry is what makes a meter look alive rather than jittery.
-- **Height is in pixels, not rows.** A band fills any of 0..32 px, so motion
+- **The run is centred in its column**, which constrains the numbers: it is
+  `(NBAND-1) * BAND_PITCH + BAND_W` wide and the leftover has to be *even* for
+  the margins to match. **7 bands at pitch 6** span 38 of the 42 px column, so
+  the margin is exactly 2 either side. (8 bands at pitch 5 span 37, leaving an
+  odd 5 — 2 px one side and 3 the other, which is what made the meter look
+  adrift in its column.)
+- **Height is in pixels, not rows.** A band fills any of 0..40 px, so motion
   moves at the finest step the panel has. The dot texture comes from the *fill
   pattern* (2px lit, 2px clear) rather than from quantising the height.
 - **The spectrum is faked**, because the host can only report one amplitude per
@@ -301,7 +316,7 @@ python host/naub_bridge.py --ports   # if it cannot find the data port
   flat after `LIVE_S` (1 s) without a `meter` line, so a bridge that dies shows
   up immediately instead of freezing the meters at whatever was last playing.
 - **Only the band *shape* is invented** — see "The meter" above. The amplitude
-  driving all 8 bands is the app's real WASAPI peak.
+  driving all 7 bands is the app's real WASAPI peak.
 - **The bridge reconnects by itself.** Every `deploy.py` reloads the board and
   drops the CDC link; a bridge that died there would leave the panel dark and
   silently stop applying knob moves, which looks exactly like a firmware bug and
@@ -341,10 +356,10 @@ and rule are *missing*.
 | ####----- | ######--- | ########## |  volume bars stay put   page 0
 |           |  MUSIC    |  SPOTIFY   |  edited column blanked, rule gapped
 |             SPOTIFY                |  selected name, full width  panel p0
-|   [ic]     [ ICON ]     [ic]       |  icon shelf, TOP-aligned    panel p1-3
-| o o O o o  [ ICON ]     .. .. |    |  counter and level FLANK it panel p3
+|   [ic]     [ ICON ]     [ic]       |  icon shelf, TOP-aligned    panel p1-4
+| o o O o o  [ ICON ]     .. .. |    |  counter and level FLANK it panel p4
 |------------------------------------|
-|  APP CTRL |||        SYS. ######    |  mode bar stays put     pages 6-7
+| APP CTRL |||       SYS. #########   |  mode bar stays put     page 7
 ```
 
 Four pages is not much, and the layout is what buys the icons their size back —
@@ -355,12 +370,15 @@ Four pages is not much, and the layout is what buys the icons their size back �
   128 px before it is trimmed;
 - **the shelf is top-aligned, not bottom-aligned.** Every tier starts on the
   same page and the focused one simply reaches further down — that is what lets
-  the focus be 24 px while its neighbours are 16 px;
+  the focus be 32 px while its neighbours are 24 px;
 - **the counter and the level flank the focused icon** rather than sitting
   under it, in the very row the tall icon is using. A row of their own would
-  have cost the shelf a third of its height. `NEAR` is kept tight (0.30) so the
-  24 px tier never reaches either of them: at the tier edge the icon spans
-  x 39–89, against a counter ending at 38 and a level starting at 90.
+  have cost the shelf a quarter of its height. `NEAR` is kept tight (0.18) so
+  the 32 px tier never reaches either of them: at the tier edge the icon spans
+  x 40–88, against a counter ending at 40 and a level starting at 88. The last
+  row of that page is the rule the mode bar sits under, laid across the full
+  width *after* everything else, so it never breaks where the tall icon stands
+  — the icon reads as standing on the line.
 
 - **The counter is honest.** One marker per app with a *live audio session*
   (`appmeter.active()`), filled at the current selection. Nothing playing means
@@ -371,11 +389,18 @@ Four pages is not much, and the layout is what buys the icons their size back �
   scroll, so you see what you are about to assign. Same fast-attack /
   slow-release ballistics as the mixer's bands, with a peak tick on the leading
   edge.
-- **Page-aligned size tiers.** `TIERS = ((24,1),(16,1))` — both a multiple of
+- **Page-aligned size tiers.** `TIERS = ((32,1),(24,1))` — both a multiple of
   8 and starting on the same page, so an icon is `fb[o:o+w] = src[s:s+w]` with
   no bit shifting. The tier comes from the *fractional* distance to the focus,
   so easing `pos` toward an integer target produces the zoom for free.
   `PITCH = 42` puts exactly three icons on screen.
+- **The blocks must match `TIERS`.** `Drawer` checks their length at
+  construction and raises a clear error naming `gen_switcher.py`, because the
+  failure otherwise is horrible: on the device `_blit` runs off a short block
+  and raises `IndexError` from inside the frame loop, while on CPython the same
+  short slice assignment silently **resizes** the destination bytearray — so
+  the PC preview looks perfect and only the panel breaks. `deploy.py` now ships
+  `switcher_data.py` with every deploy for the same reason.
 - **The wipe carries a rule on its leading edge** — the last revealed row is
   forced solid while the panel is moving, so it reads as a surface sliding over
   the meters rather than as content appearing out of nowhere.
@@ -429,6 +454,16 @@ ENC4 lower-right. Non-negotiable lessons baked into `naubhw.py`:
   (it did not on macOS — see BRINGUP_LOG.md). This is the deploy path.
 - Copy order: support modules first, **code.py last** — every write triggers
   auto-reload; only the last one should run. `deploy.py` does this.
-- Serial console (COM9): **read-only.** Host->device writes hang/time out on
-  this board. Listen for prints/tracebacks; never write. If opening the port
-  manually, set `write_timeout` and only ever `read()`.
+- Serial console (COM9): treat as **read-only for data.** Host->device writes
+  were found to hang during V1 bring-up, so nothing streams over it — that is
+  what the CDC *data* port is for. Two control bytes did get through in V2
+  testing, though, and they are worth knowing about (see below).
+- **A crashed `code.py` stops auto-reload.** An unhandled traceback drops
+  CircuitPython to the REPL, and from there copying a new `code.py` changes
+  nothing: the console goes quiet and the board looks wedged. Sending Ctrl-C
+  then Ctrl-D over COM9 soft-reboots it and re-runs `code.py` — that recovered
+  it without a replug. `tmp/reboot.py` in the job scratch does exactly this;
+  keep `write_timeout` short in case the write does hang.
+- If the ports enumerate but refuse to open right after a physical replug
+  (`PermissionError: Access is denied`), that is Windows still tearing down the
+  old handles. Wait a few seconds rather than assuming a fault.

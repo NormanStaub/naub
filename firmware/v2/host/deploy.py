@@ -18,6 +18,11 @@ DEMOS = os.path.normpath(os.path.join(HERE, '..', 'demos'))
 # harmless for the demos that do not use the data port.
 LIBS = ('boot.py', 'gfx.py', 'ccfont.py', 'st7565.py', 'naubhw.py', 'link.py',
         'mixer.py', 'drawer.py', 'media.py')
+# Data modules a LIB needs, shipped whatever is being deployed: drawer.py
+# imports nothing itself, but every user of it needs the icon blocks, and the
+# blocks have to match drawer.TIERS.  Deploying a one-off script without these
+# left the board running new code against stale icon data.
+DATA = ('switcher_data.py',)
 DEMO_MAP = {
     'ball':   ('demo_ball.py', ()),
     'gray':   ('demo_gray_modes.py', ('graybars.py', 'graygrad.py')),
@@ -95,6 +100,10 @@ def main(argv):
     for e in extras:
         shutil.copy(e, root + os.path.basename(e))
         print('-> %s%s' % (root, os.path.basename(e)))
+    for d in DATA:
+        if os.path.basename(d) not in [os.path.basename(e) for e in extras]:
+            shutil.copy(os.path.join(DEMOS, d), root + d)
+            print('-> %s%s' % (root, d))
     shutil.copy(code, root + 'code.py')
     print('-> %scode.py  (%s)' % (root, os.path.basename(code)))
     if do_watch:
