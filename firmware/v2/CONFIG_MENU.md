@@ -15,6 +15,7 @@ that knows four kinds of value.
  page 0    MENU NAV | SCROLL | SELECT     what each top knob does
  pages 1-5 the setting list, 16px rows, scrollbar down column 0
  page 6    OS | SYS | DISP                tabs, the active one inverted
+           <ADVANCED DISPLAY              ... or where you are, in a submenu
  page 7    the mode bar                   mixer.py's, copied in by the caller
 ```
 
@@ -23,10 +24,11 @@ because that labelling *is* the affordance:
 
 | knob | does | notes |
 |---|---|---|
-| ENC1 | switches tabs | clamped at both ends, never wraps |
+| ENC1 | switches tabs, or backs out of a submenu | clamped at both ends, never wraps |
+| ENC1 click | backs out of a submenu | the same thing, for whoever reaches for a click |
 | ENC2 | moves the cursor | the window follows it |
 | ENC3 | changes the focused value | **live** — no arming, no commit |
-| ENC3 click | flips a `BOOL` | and is where any future one-shot action goes |
+| ENC3 click | enters a `PAGE`, flips a `BOOL` | and is where any future one-shot action goes |
 
 There is no edit mode on purpose. A 128×64 panel has nowhere to show *which*
 state you are in, and an invisible mode is exactly how someone changes a
@@ -59,6 +61,7 @@ The four kinds:
 | `NUM` | `(lo, hi, step)` | the number | `%d` | ± one step, clamped |
 | `BOOL` | `None` | `0` / `1` | `ON` / `OFF` | toggles |
 | `INFO` | the text | unused | the text | nothing |
+| `PAGE` | a nested rows tuple | nothing | a `>` at the right | nothing — click to enter |
 
 **`key` matters more than it looks.** It is how anything outside this file
 finds a value. Row order will change — you will insert a setting in the middle
@@ -104,6 +107,35 @@ across. A fourth needs a narrower cell layout in `draw_tabs()` — the tab strip
 is the one part of this screen that does not scale for free, and that is a
 deliberate limit: a config panel that needs six tabs on a screen this size
 needs fewer settings, not more tabs.
+
+## Adding a submenu
+
+A `PAGE` row's `spec` is just another rows tuple:
+
+```python
+ADV  = (('CONTRAST', NUM, 'contrast', (0, 63, 1), 31, None, None),
+        ('BIAS',     ENUM,'bias',     ('1/9', '1/7'), 0, None, None))
+
+DISP = (...,
+        ('ADVANCED DISPLAY', PAGE, 'advanced', ADV, 0, None, None))
+```
+
+SELECT-click enters it; MENU NAV (turned or clicked) backs out. The row draws a
+`>` at its right edge, page 6 becomes an inverted `<ADVANCED DISPLAY` bar while
+you are inside, and each page keeps its own cursor and scroll position, so
+backing out puts you where you were.
+
+**Pages are flattened at construction.** A tab and a submenu are the same
+thing — a list of rows with its own cursor, scroll and values — so they are
+built into one flat array of *views* and a `PAGE` row holds its child's index.
+Nothing recurses at runtime: entering is an integer assignment and backing out
+is a pop. A submenu therefore costs exactly what a tab costs, and nesting one
+inside another needs no new code (though on a screen this size, if you want a
+third level, the answer is probably fewer settings).
+
+There is no automatic BACK row and no breadcrumb trail beyond the one bar. Both
+would cost a row of a five-row window to say what the inverted bar and the
+knob labels already say.
 
 ## Adding artwork
 
@@ -162,20 +194,66 @@ use it (`int(cfg.value('view_angle'))`) or store the real value in the labels
 and parse once — do not add a parallel table of "real" values, which is a
 second thing to keep in step.
 
-Nothing is wired yet. When you wire the first one, do it in `demo_mixer.py`
-where the detent is handled, not inside `config.py`:
+Wiring one up happens in `demo_mixer.py`, where the detent is handled, never
+inside `config.py`. There is one function for it and it is the only place that
+knows about both a setting and a register:
 
 ```python
-elif mx.mode == CONFIG_MODE:
-    if c == 2 and cfg.adjust(d):
-        cfg_dirty = True
-        if cfg.focused_key() == 'brightness':
-            dim.full = cfg.value('brightness')
+def apply_display(key):
+    if key == 'contrast':
+        disp.set_contrast(cfg.value('contrast'))
+    elif key == 'bias':
+        disp.cmd(BIAS_CMD[cfg.value('bias')])
+    elif key == 'brightness':
+        dim.set_full(cfg.value('brightness'), now)
+    else:
+        return False
+    return True
 ```
 
-`config.py` draws settings; it does not know what a backlight is. Keeping the
-effects in the demo is what lets the module be imported by the PC preview with
-no hardware anywhere near it.
+called from the two places a value can change:
+
+```python
+elif cfg.adjust(d):                    # a detent
+    cfg_dirty = True
+    apply_display(cfg.focused_key())
+
+key = cfg.focused_key()                # a click -- read the key BEFORE it,
+if cfg.click():                        # because entering a PAGE moves the
+    cfg_dirty = True                   # cursor somewhere else
+    apply_display(key)
+```
+
+Note the labels doing double duty as the lookup: `BIAS_CMD['1/9'] -> 0xA2`. The
+config module hands back what the row says and the demo turns that into a
+command byte, so there is no second table of "real" values to keep in step.
+
+`config.py` draws settings; it does not know what a register or a backlight is.
+That is what keeps it importable by the PC preview with no hardware anywhere
+near it.
+
+### ADVANCED DISPLAY
+
+`DISP > ADVANCED DISPLAY` is the ST7565R itself — the same registers the V2
+bring-up swept by hand to get a picture at all (`bench/stage4_display.py`):
+
+| row | register | what it does |
+|---|---|---|
+| CONTRAST | `0x81 n` | electronic volume, 0-63 |
+| RESISTOR RATIO | `0x20\|n` | V0 divider, 0-7 |
+| BIAS | `0xA2` / `0xA3` | 1/9 or 1/7 |
+| BOOSTER | `0xF8 n` | 4x / 5x / 6x charge pump |
+| INVERT | `0xA6` / `0xA7` | normal or reversed |
+| ALL PIXELS ON | `0xA4` / `0xA5` | the bring-up test pattern |
+| START LINE | `0x40\|n` | scrolls the RAM window, 0-63 |
+
+They are **live**: turning the knob writes the register, because a calibration
+control you have to reflash to try is not one. Every value of every one of them
+has been swept on the hardware and the panel survives all of them.
+
+Two can black the panel out — contrast 0, and ALL PIXELS ON. The cursor does
+not move when they do, so the way back is the knob you just turned; a power
+cycle is the other way back, since nothing here is saved.
 
 ---
 
@@ -249,7 +327,9 @@ python host/deploy.py mixer          # ships config.py with everything else
 
 ## 8. What is deliberately missing
 
-- **Persistence.** Values reset on reload. When it is wanted, `key` is the
+- **Persistence.** Values reset on reload — including the display registers,
+  which is deliberate for now: it means no setting can brick the panel across
+  a power cycle while the calibration values are still being found. When it is wanted, `key` is the
   handle: a dict of `{key: value}` to NVM or to the host's own state file, and
   a `Config.load(d)` that ignores keys it no longer has — which is exactly why
   the keys are strings.

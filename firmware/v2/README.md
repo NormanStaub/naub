@@ -199,9 +199,18 @@ between. Measured on the board: full render 4.6 ms, a SCROLL detent 0.8 ms, a
 SELECT detent 3.4 ms (it rebuilds that row's strip), and the screen costs
 7.5 kB with 322 kB still free.
 
-Only `DISPLAY VIEW ANGLE` is real, and even that is a drawing — nothing is
-wired to it yet. The rest are placeholders in the right shape so the list, the
-scrolling and the tabs have something to be tested against.
+`DISP > ADVANCED DISPLAY` is a submenu (SELECT-click to enter, MENU NAV to
+leave) holding the ST7565R registers the bring-up swept by hand — contrast,
+resistor ratio, bias, booster, invert, all-pixels-on, start line. They are
+**live**: turning the knob writes the register. Every value of every one has
+been swept on the hardware; two of them (contrast 0, ALL PIXELS ON) black the
+panel out, and the way back is the knob you just turned, since the cursor does
+not move. BRIGHTNESS drives the real backlight.
+
+`DISPLAY VIEW ANGLE` is still a drawing with nothing behind it — it is waiting
+on which of the advanced registers should stand behind it. The remaining rows
+are placeholders in the right shape so the list, the scrolling and the tabs
+have something to be tested against.
 
 ### One program is not one session
 

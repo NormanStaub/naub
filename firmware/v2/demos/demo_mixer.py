@@ -41,6 +41,12 @@
 # or key wakes it, and the wake also does whatever it was pressed for -- a mixer
 # you have to poke twice is worse than one that is dim.
 #
+# CONFIG's ADVANCED DISPLAY submenu drives the ST7565's own registers live --
+# the same ones bring-up swept by hand to get a picture at all.  Two of them
+# can black the panel out (contrast 0, ALL PIXELS ON); the cursor does not
+# move when they do, so the way back is the knob you just turned.  Nothing is
+# saved, so a power cycle is the other way back.
+#
 # CONFIG is the last mode: three knobs across the top drive it, labelled on
 # screen -- ENC1 the tabs, ENC2 the cursor, ENC3 the focused value, live.  Only
 # DISPLAY VIEW ANGLE is a real setting and even that is a drawing for now; the
@@ -109,6 +115,11 @@ EQ_GAIN_STEP = 0.5    # dB
 EQ_FREQ_STEP = 0.012  # of the 20 Hz - 20 kHz span
 EQ_Q_STEP = 0.02
 P_GAIN, P_FREQ, P_Q = 0, 1, 2
+
+# ADVANCED DISPLAY -> ST7565R registers.  The labels ARE the lookup: the config
+# module hands back what the row says, and these turn that into a command byte.
+BIAS_CMD = {'1/9': 0xA2, '1/7': 0xA3}
+BOOST_ARG = {'4X': 0x00, '5X': 0x01, '6X': 0x03}
 
 disp = naubhw.display()
 bl = naubhw.Backlight(idle.FULL)
@@ -276,6 +287,34 @@ def set_screen(v):
     views = v
     n_planes = len(v)
     i = 0
+
+
+def apply_display(key):
+    """Push one CONFIG value at the hardware.
+
+    config.py draws settings and knows nothing about registers or backlights;
+    this is the only place that knows both, which is what keeps that module
+    importable by the PC preview with no hardware anywhere near it."""
+    if key == 'contrast':
+        disp.set_contrast(cfg.value('contrast'))
+    elif key == 'resistor':
+        disp.cmd(0x20 | (cfg.value('resistor') & 0x07))
+    elif key == 'bias':
+        disp.cmd(BIAS_CMD[cfg.value('bias')])
+    elif key == 'booster':
+        disp.cmd(0xF8, BOOST_ARG[cfg.value('booster')])
+    elif key == 'invert':
+        disp.cmd(0xA7 if cfg.value('invert') else 0xA6)
+    elif key == 'all_on':
+        disp.cmd(0xA5 if cfg.value('all_on') else 0xA4)
+    elif key == 'start_line':
+        disp.cmd(0x40 | (cfg.value('start_line') & 0x3F))
+    elif key == 'brightness':
+        dim.set_full(cfg.value('brightness'), now)
+    else:
+        return False
+    print("display %s -> %s" % (key, cfg.value(key)))
+    return True
 
 
 def sync_wheel():
@@ -556,8 +595,9 @@ while True:
                 cfg_dirty = cfg.nav(d) or cfg_dirty
             elif c == 1:
                 cfg_dirty = cfg.scroll(d) or cfg_dirty
-            else:
-                cfg_dirty = cfg.adjust(d) or cfg_dirty
+            elif cfg.adjust(d):
+                cfg_dirty = True
+                apply_display(cfg.focused_key())
         elif mx.mode == EQ_MODE:
             b = eq_cur.bands[c]
             p = eq_param[c]
@@ -616,8 +656,15 @@ while True:
                     mx.draw_vol()
                     lk.send("mute %d %d" % (c, 1 if mx.mute[c] else 0))
                     print("mute %d %d" % (c, mx.mute[c]))
-            elif mx.mode == CONFIG_MODE:          # ENC3 click flips a toggle
-                if c == 2 and cfg.click():
+            elif mx.mode == CONFIG_MODE:
+                # ENC3 click enters a submenu or flips a toggle; ENC1 click is
+                # the way back out, which is also what turning it does.
+                if c == 2:
+                    key = cfg.focused_key()       # before the click moves it
+                    if cfg.click():
+                        cfg_dirty = True
+                        apply_display(key)
+                elif c == 0 and cfg.back():
                     cfg_dirty = True
             elif mx.mode == EQ_MODE:              # cycle gain -> freq -> Q
                 eq_param[c] = (eq_param[c] + 1) % 3

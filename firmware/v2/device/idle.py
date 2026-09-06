@@ -77,6 +77,12 @@ class Idle:
         if self._to != self.full:
             self._fade(self.full, self.up, now)
 
+    def set_full(self, pct, now=None):
+        """Change what "in use" looks like.  Goes there the same way a poke
+        does -- quickly, because you are turning the knob that did it."""
+        self.full = pct
+        self.poke(now)
+
     # ---- the fade --------------------------------------------------------
     def _fade(self, target, dur, now):
         self._from = self.pct

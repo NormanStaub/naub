@@ -60,18 +60,39 @@ def shots():
     cfg.scroll(+1)
     snap('SCROLL down: BRIGHTNESS, and the scrollbar moves')
 
-    cfg.scroll(+1)
-    cfg.scroll(+1)
-    snap('SCROLL to the end: the window follows the cursor')
+    cfg.adjust(-6)
+    snap('SELECT on BRIGHTNESS: 70% -- live on the backlight')
 
-    cfg.adjust(+1)
-    snap('SELECT on a toggle: INVERT is ON')
+    cfg.scroll(+2)
+    snap('SCROLL to the end: the window follows the cursor')
 
     cfg.nav(-1)
     snap('MENU NAV back one tab: SYS')
 
     cfg.nav(-1)
     snap('MENU NAV again: OS, with a read-only row')
+
+    cfg.nav(+1)
+    cfg.nav(+1)
+    while cfg.focused_key() != 'advanced':
+        cfg.scroll(+1)
+    snap('DISP again: the ADVANCED DISPLAY row, with its > mark')
+
+    cfg.click()
+    snap('SELECT click enters: the ST7565 registers, and the way back')
+
+    cfg.adjust(-9)
+    snap('CONTRAST down to 22 -- this one is live on the glass')
+
+    cfg.scroll(+4)
+    snap('scrolled into the toggles')
+
+    cfg.click()
+    snap('INVERT ON')
+
+    cfg.click()
+    cfg.nav(-1)
+    snap('MENU NAV backs out to DISP, cursor where it was')
     return out
 
 
