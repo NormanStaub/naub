@@ -16,7 +16,8 @@ DEMOS = os.path.normpath(os.path.join(HERE, '..', 'demos'))
 
 # boot.py first: it only takes effect after a power cycle, and copying it is
 # harmless for the demos that do not use the data port.
-LIBS = ('boot.py', 'gfx.py', 'ccfont.py', 'st7565.py', 'naubhw.py', 'link.py',
+LIBS = ('boot.py', 'gfx.py', 'ballistics.py', 'ccfont.py', 'st7565.py',
+        'naubhw.py', 'link.py',
         'mixer.py', 'drawer.py', 'media.py', 'eqcurve.py', 'eqscreen.py',
         'wipe.py', 'idle.py', 'wheel.py')
 # Data modules a LIB needs, shipped whatever is being deployed: drawer.py

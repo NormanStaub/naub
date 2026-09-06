@@ -42,6 +42,7 @@ is what makes the curve read as a surface with the dots beneath it.
 Pure Python, no hardware imports, so host/preview_eq.py renders exactly what
 the panel shows.
 """
+import ballistics
 import gfx
 
 W = gfx.W
@@ -80,8 +81,8 @@ BANDX = tuple(BAND_X0 + i * BAND_PITCH for i in range(NMETER))
 PEAK_W = 4                    # the marker overhangs its band, so it reads as
 PEAK_DX = -1                  # a line rather than another dot
 
-FALL = 0.18                   # same ballistics as mixer.py, same 16 ms tick
-PEAK_FALL = 0.028
+FALL = ballistics.FALL        # one home for all three meters; ballistics.py
+PEAK_FALL = ballistics.PEAK_FALL
 
 
 def _band_pages(h):
@@ -272,7 +273,9 @@ class EqScreen:
                     d = 1
                 elif d > PLOT_H:
                     d = PLOT_H
-                r = FLOOR_ROW - d + 1
+                r = FLOOR_ROW - d + 1 - ballistics.PEAK_GAP   # clear of the bar
+                if r < 0:
+                    r = 0
                 o = (r >> 3) * W + bx + PEAK_DX
                 m = 1 << (r & 7)
                 lo = 0 if o < 0 else o

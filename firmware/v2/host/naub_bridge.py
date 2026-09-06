@@ -10,6 +10,7 @@ times as often, which is more load on the user's PC to feed a meter that is
 already smoothed by its own ballistics -- the opposite of the trade this file
 is trying to make.
     python naub_bridge.py --ports          # what serial ports are there?
+    python naub_bridge.py --sessions       # what audio does Windows see?
     python naub_bridge.py --once           # don't reconnect; exit on unplug
 
 LEAVE THIS RUNNING.  Without it the device has no audio to show and no way to
@@ -465,6 +466,44 @@ class Bridge:
             time.sleep(0.002)
 
 
+def _is_bridge(pid):
+    """A running bridge shows up here (not in its OWN list -- it skips itself)
+    because its loopback capture opens the render endpoint.  Say so, rather
+    than leave a mystery `python` playing whatever you are listening to."""
+    try:
+        import psutil
+        return 'naub_bridge' in ' '.join(psutil.Process(pid).cmdline())
+    except Exception:
+        return False
+
+
+def show_sessions():
+    """Every audio session Windows has, grouped the way a column groups them.
+
+    Here because "that app is in the list but has no level and the knob does
+    nothing" is a question about WASAPI, not about the panel, and the answer is
+    usually that the program holds more than one session and only one of them
+    is the one you can hear."""
+    src = appmeter.AppMeters()
+    groups = src.sessions()
+    if not groups:
+        print('no audio sessions (%s)' % (src._fail or 'nothing is playing'))
+        return
+    print('%-16s %-4s %s' % ('program', 'n', 'sessions (pid, state, peak, fader)'))
+    for key in sorted(groups):
+        g = groups[key]
+        bits = ['%d %s peak=%.3f vol=%.2f%s'
+                % (x.pid, 'ACTIVE' if x.active else 'idle  ',
+                   max(x.peak() for _ in range(4)), x.gain(),
+                   '  <- a naub bridge capturing the output' if _is_bridge(x.pid)
+                   else '')
+                for x in g]
+        print('%-16s %-4d %s' % (key, len(g), ' | '.join(bits)))
+    print()
+    print('offered to the switcher: %s' % (', '.join(src.active()) or '(none)'))
+    print('columns would be       : %s' % ' | '.join(k or '-' for k in src.top(NCOL)))
+
+
 def serve(port, rate, seconds):
     """One connected session.  -> True if it ended on its own terms."""
     ser = open_data(port)
@@ -520,6 +559,9 @@ def main(argv):
             seconds = float(next(it))
         elif a == '--wait':
             wait = float(next(it))
+        elif a == '--sessions':
+            show_sessions()
+            return
         elif a == '--ports':
             for p in list_ports.comports():
                 print('%-8s %s [%s]' % (p.device, p.description, p.hwid))

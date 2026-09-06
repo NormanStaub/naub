@@ -43,6 +43,7 @@ they do not shimmer.
 Pure Python, no hardware imports -- host/preview_drawer.py renders exactly what
 the panel shows.
 """
+import ballistics
 import gfx
 
 W = gfx.W
@@ -91,11 +92,9 @@ SMALL_W, SMALL_PITCH = 3, 4
 BAR_MASK = 0x0C               # panel y34..35: the 2px-tall dot row
 PEAK_MASK = 0x1F              # panel y33..37: the peak tick, taller than the bar
 
-# Same ballistics as the mixer's bands (tuned for a ~16 ms tick): jump to any
-# new peak, settle back smoothly, and let the peak tick fall ~6x slower so it
-# detaches and hangs above the bar.
-FALL = 0.18
-PEAK_FALL = 0.028
+# Same ballistics as every other meter here, and from the same place.
+FALL = ballistics.FALL
+PEAK_FALL = ballistics.PEAK_FALL
 
 
 def fit(font, s, width=NAME_MAXW):
@@ -363,7 +362,12 @@ class Drawer:
                 d = 1
             elif d > avail:
                 d = avail
-            pan[o + LVL_X + d - 1] |= PEAK_MASK
+            # ... and one pixel PAST the bar's leading edge rather than on it,
+            # the horizontal version of the same rule (ballistics.PEAK_GAP).
+            x = LVL_X + d - 1 + ballistics.PEAK_GAP
+            if x >= LVL_END:
+                x = LVL_END - 1
+            pan[o + x] |= PEAK_MASK
         self._mirror_row()
 
     draw_row = draw_level        # the level is what moves every tick

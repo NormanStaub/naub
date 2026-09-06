@@ -68,6 +68,7 @@ shimmer at all and a quarter of the drawing work.
 """
 from random import random as _rand
 
+import ballistics
 import gfx
 
 W = gfx.W
@@ -133,12 +134,9 @@ METER_H = NPAGE * 8           # 40 px of travel
 PEAK_W = 4                    # peak marker overhangs its band, so it reads as
 PEAK_DX = -1                  # a line rather than another dot
 
-# Meter ballistics, as fraction-of-the-gap per update.  Both rise instantly and
-# fall gradually -- that asymmetry is what makes a meter look alive.  The peak
-# marker falls ~6x slower than the band, so it detaches and settles.  Tuned for
-# TICK_MS = 16 (~60 Hz); at half the rate, roughly double both.
-FALL = 0.18
-PEAK_FALL = 0.028
+# Meter ballistics live in one place for all three screens; see ballistics.py.
+FALL = ballistics.FALL
+PEAK_FALL = ballistics.PEAK_FALL
 
 # Faked spectrum.  The host can only tell us one amplitude per app, so the
 # shape across the bands is invented: a gentle tilt (lows louder, as most
@@ -315,7 +313,14 @@ class Mixer:
                         d = 1
                     elif d > METER_H:
                         d = METER_H
-                    y = METER_H - d
+                    # One pixel CLEAR of the bar, not on its top row: at the
+                    # same height the marker merges into the bar every time the
+                    # signal reaches its own peak, and the hold stops reading
+                    # as a separate thing.  Clamped at the ceiling, where there
+                    # is nowhere above to go.
+                    y = METER_H - d - ballistics.PEAK_GAP
+                    if y < 0:
+                        y = 0
                     o = (y >> 3) * COLW + bx + PEAK_DX
                     m = 1 << (y & 7)
                     lo = 0 if o < 0 else o

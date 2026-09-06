@@ -16,6 +16,7 @@ device/   modules that live on the CIRCUITPY drive (pure CircuitPython)
   media.py     transport keys over USB HID -- no library, no host software
   idle.py      backlight: full while in use, 10% after 1 min, off after 5
   wheel.py     which apps the switcher offers, and for how long
+  ballistics.py how every meter moves: one home for FALL/PEAK_FALL/PEAK_GAP
   ccfont.py    C&C Red Alert font (TINY h8 full ASCII, SML h16, BIG digits h27)
 demos/    ready-to-flash examples (each becomes code.py) + generated data
   demo_mixer.py       the mixer screen + the app-switcher dropdown  <- the UI
@@ -158,6 +159,37 @@ per-app peak polls on the PC, for no visible difference. The loopback capture
 starts and stops with the EQ screen: measured **62–79 ms to start**, inside the
 220 ms mode wipe, so the spectrum is there by the time the screen finishes
 sliding in.
+
+### One program is not one session
+
+Discord runs six processes and holds a render session from more than one of
+them; measured in a call, pid 5724 was ACTIVE with a peak of 1.0 while pid
+14168 sat idle at 0.0. `appmeter` used to key a dict by program name and
+*assign* into it, so it kept whichever the enumeration returned last — measured
+six times out of six, the idle one. That is the whole of "Discord is in the
+list but has no level and the knob does nothing".
+
+Sessions are now grouped per program: the level is the loudest of them, and a
+volume or mute goes to **all** of them, because which one is audible changes
+from call to call. Reproduced deterministically with two same-named processes,
+one silent and one playing, the silent one enumerated last:
+
+```
+pid 36340 ACTIVE peak 0.000     OLD (kept the last session)  -> level 0.000
+pid 40632 ACTIVE peak 0.275     NEW (loudest of the group)   -> level 0.559
+```
+
+All output endpoints are enumerated too, not just the default — apps can be
+pointed anywhere and this machine has fifteen active ones. That is also the
+cheaper path: pycaw's `GetAllSessions()` rebuilds its COM plumbing per call and
+measured **15 ms for one device**, while holding the session managers and
+sweeping **all fifteen measured 3 ms**.
+
+Hold those managers with `QueryInterface`, never `ctypes.cast` — cast
+reinterprets the pointer without taking a reference, so when the `IUnknown` it
+came from is collected COM frees the object and every cached manager is left
+dangling. That crashed the bridge with an access violation minutes later,
+nowhere near the cause.
 
 ### The switcher's list is the device's, not the host's
 
