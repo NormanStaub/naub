@@ -141,6 +141,13 @@ SELECT-click enters it; MENU NAV (turned or clicked) backs out. The row draws a
 you are inside, and each page keeps its own cursor and scroll position, so
 backing out puts you where you were.
 
+**Views are allocated breadth first**, and that is load-bearing rather than
+tidy: `nav()` picks a tab by assigning `view = tab`, so views `0..ntabs-1` have
+to *be* the tabs. Allocating depth-first gave SYS's first submenu index 2 and
+pushed DISP to 3, so selecting DISP showed the submenu instead — and it only
+worked before because ADVANCED DISPLAY hangs off the *last* tab, where its child
+index landed after every tab anyway. `_check()` asserts the invariant now.
+
 **Pages are flattened at construction.** A tab and a submenu are the same
 thing — a list of rows with its own cursor, scroll and values — so they are
 built into one flat array of *views* and a `PAGE` row holds its child's index.

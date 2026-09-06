@@ -425,8 +425,19 @@ class Config:
         self.vstrip = []
         self.vmv = []
         self.vcard = []           # a view is either a list of rows or a card
+        # BREADTH FIRST, and it matters.  nav() selects a tab by assigning
+        # `view = tab`, so views 0..ntabs-1 must BE the tabs.  Allocating
+        # depth-first gave the first submenu of SYS index 2 and pushed DISP to
+        # 3, so choosing DISP landed on the submenu.  That invariant used to
+        # hold only by luck: ADVANCED DISPLAY belongs to the LAST tab, so its
+        # child index fell after every tab anyway, and the first submenu on any
+        # earlier tab broke it.  _check() asserts it now instead of hoping.
         for name, rows in tabs:
             self._add_view(rows, name)
+        v = 0
+        while v < len(self.vrows):      # grows as children are appended, which
+            self._add_children(v)       # is what carries nesting past depth 1
+            v += 1
         self.tab = tab                # which TAB is lit at the bottom
         self.view = tab               # ... and which view is on screen
         self.stack = []               # how we got here, for backing out
@@ -450,8 +461,8 @@ class Config:
 
     def _add_view(self, rows, title, card=None):
         """One list of rows, with everything it needs to be drawn and edited.
-        Recurses into PAGE and CARD rows, which is fine here -- it happens
-        once, at construction, and the tree is two deep.
+
+        Does NOT recurse -- _add_children does, once every tab has its index.
 
         A CARD's view has NO rows.  That is the whole of what makes it
         different: everything that walks rows finds none, so the cursor, the
@@ -473,13 +484,17 @@ class Config:
         self.vstrip.append(strip)
         self.vmv.append(tuple(memoryview(strip)[p * W:(p + 1) * W]
                               for p in range(len(strip) // W)))
-        for i, r in enumerate(rows):
-            if r[F_KIND] == PAGE:
+        return v
+
+    def _add_children(self, v):
+        """Give every PAGE and CARD row in view `v` a view of its own."""
+        for i, r in enumerate(self.vrows[v]):
+            k = r[F_KIND]
+            if k == PAGE:
                 self.vchild[v][i] = self._add_view(r[F_SPEC], r[F_NAME])
-            elif r[F_KIND] == CARD:
+            elif k == CARD:
                 self.vchild[v][i] = self._add_view(
                     (), r[F_NAME], r[F_SPEC](self.font))
-        return v
 
     def _check(self):
         """Every name must fit its field.  A strip wider than the space it is
@@ -487,6 +502,13 @@ class Config:
         CPython -- so the PC preview looks perfect -- and raises IndexError on
         the device.  That has bitten this project once already (drawer.py);
         catch it at construction, where the message can say which name."""
+        for t in range(len(self.tabs)):
+            # nav() assigns `view = tab`, so this has to hold.  It is one
+            # comparison at construction against a whole tab showing the wrong
+            # screen -- which is exactly how this was found, on the panel.
+            if self.vtitle[t] != self.tabs[t][0]:
+                raise ValueError('view %d is %r, not tab %r'
+                                 % (t, self.vtitle[t], self.tabs[t][0]))
         for v, rows in enumerate(self.vrows):
             for i, r in enumerate(rows):
                 avail = _edge(r) - NAME_X          # the same edge _build uses,
