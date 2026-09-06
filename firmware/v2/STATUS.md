@@ -1,0 +1,134 @@
+# V2 status: what landed, what is unfinished
+
+Written 2026-09-05, covering the work since `48a20ec` (the font change). The
+detail lives in the commit messages and in `README.md` / `CONFIG_MENU.md` /
+`PROTOCOL.md`; this is the map, and the honest list of what is *not* done.
+
+---
+
+## What landed
+
+### The panel
+- **Backlight follows you** (`device/idle.py`): full while in use, 10% after a
+  minute, off after five, fading between — 3 s down, 0.1 s up, interpolated in
+  perceptual space. Any knob or key wakes it and still does what it was pressed
+  for.
+- **The frame loop is paced to the glass at 92.3 Hz.** The ST7565R scans at
+  `fOSC/(4*65)` — 77 Hz typical, 92 at the fast end of tolerance — so the loop
+  used to rewrite the controller's RAM about five times per displayed frame.
+- **Every clock is `time.monotonic_ns()`.** The float `monotonic()` is single
+  precision here and its granularity doubles as uptime doubles (0.488 ms at
+  1.5 h, ~8 ms after a day). A 16 ms tick timed against that eventually stops
+  being a tick.
+
+### The mixer
+- **One app, one column**: assigning an app another column is pinned to swaps
+  the two, on both device and host.
+- **Assignments outlive everything** — `%LOCALAPPDATA%\naub\pins.json`, pushed
+  back on connect. They were being thrown away on every deploy.
+- **The switcher's list is the device's** (`device/wheel.py`): an app must be
+  audible for 4 s in one run to earn a place, and keeps it for 10 minutes after
+  it goes quiet. Notification chimes never appear.
+- **Discord (and anything else) meters the session you can actually hear.** A
+  program can hold several sessions; `appmeter` kept whichever the enumeration
+  returned last, measured six times out of six to be the silent one.
+- **Peak markers** sit a pixel clear of the bar and fall slower
+  (`device/ballistics.py`, one home for all three meters).
+
+### The CONFIG screen (new)
+- Fourth mode, replacing CUSTOM 2. Three knobs labelled on screen: tabs,
+  cursor, value — turned live, no arming, no commit.
+- Settings are tuples; `CONFIG_MENU.md` is the guide to adding them.
+- **ADVANCED DISPLAY** submenu: the ST7565R registers bring-up swept by hand,
+  live on the glass.
+- **DISPLAY VIEW ANGLE is the contrast register**, mapped over the measured
+  25–40 range, kept in agreement with the raw row in both directions.
+- **SHADING** shows a waving flag whose gradient is `host/frc.py`'s encoder
+  transcribed, so it previews the switcher's icons honestly. That is why the
+  screen runs four FRC planes.
+- The list scrolls smoothly.
+
+### Host
+- The loopback capture (a 48 kHz thread) runs **only while the EQ screen is
+  up**; `ameter` drops to 5 Hz when the switcher is shut.
+- `naub_bridge.py --sessions` prints the grouped WASAPI table.
+
+---
+
+## Unfinished
+
+### Settings that exist but do nothing
+Ten of the twenty rows are placeholders in the right shape — they were built
+so the list, scrolling and tabs had something to be tested against. Wiring one
+is the `apply_display()` pattern in `CONFIG_MENU.md` §4.
+
+| tab | key | what it would take |
+|---|---|---|
+| DISP | `shading` | the drawer/icon pipeline would have to accept a plane count at runtime; the icons are baked 4-plane (`gen_switcher.py`) |
+| DISP | `dim_after` | trivial — `idle.Idle.stages`, but the stages are a tuple built at construction |
+| SYS | `meter_rate` | the host's `--rate`, so it needs a protocol verb |
+| SYS | `knob_step` | the `0.04` per detent in `demo_mixer` |
+| SYS | `hold_mute` | gate the `HOLD_NS` branch |
+| SYS | `media_keys` | gate `md.tap()` |
+| OS | `autoconnect`, `keep_columns` | host-side behaviour, so both need a verb |
+| OS | `link`, `firmware` | INFO rows showing hardcoded strings; should report the real link state and a real version |
+
+### Not built at all
+- **CUSTOM 1** is still a stub: flipping to it moves the mode bar and shows the
+  mixer screen behind it. It is the last placeholder mode.
+- **No persistence for any config value.** Everything resets on reload, which
+  is deliberate while the display registers are being calibrated — no setting
+  can brick the panel across a power cycle. When it is wanted, `key` is the
+  handle: a dict to NVM or to the host's own state file.
+- **No config protocol.** Same shape as the EQ's: `cfg <key> <value>` both ways.
+- **No `ACTION` kind** (RESET, FACTORY). It belongs on the ENC3 *click*, never
+  on a detent.
+- **The tab strip fits three tabs.** A fourth needs a narrower cell layout in
+  `draw_tabs()`.
+- **The device shows nothing before the host connects** — column names, levels
+  and the EQ state all come from the bridge. Pins survive on the host, not on
+  the device.
+
+### Open decisions, waiting on you
+- **`AUTO_PREAMP = False`** (`host/eqapo.py`). Boost is boost; the alternative
+  guarantees headroom but measured a 12.3 dB drop across everything else when
+  one band was maxed.
+- **The mode list does not wrap**, so there is no wrap-direction question yet —
+  but if it ever does, forward from the last mode to the first would wipe
+  right-to-left, following the button rather than the destination.
+- **3-frame shading modes were dropped** from SHADING, because a 3-frame
+  pattern inside the 4-plane cycle repeats a frame and shows the wrong grey.
+  They can come back with that caveat if you want them.
+- **The scrollbar is 2 px**, thinner than the bar in the sketch.
+
+### Known and unexplained
+- **`PLANE GUARD`**: the screen going dark was `views[i]` with `i` past the end
+  of a shorter plane list. `set_screen()` keeps the three in step and a
+  9700-transition soak never reproduced the original fault, so the root cause
+  is still unproven. The guard prints one line if it ever fires; that line is
+  worth reporting.
+- **`--rate 50` is really 31.5 Hz.** Windows' timer granularity is 15.6 ms and
+  the bridge's 2 ms sleep rounds up to it. Left alone deliberately: fixing it
+  means `timeBeginPeriod(1)` and a loop spinning sixteen times as often, which
+  is more load on the PC to feed a meter its own ballistics already smooth.
+
+---
+
+## Traps this codebase has already fallen into
+
+Collected because each one cost real time, and each is still reachable:
+
+- **A short slice assignment resizes a `bytearray` on CPython and raises
+  `IndexError` on the device** — so the PC preview looks perfect and the panel
+  crashes. Clip every copy; validate at construction.
+- **Slicing the source of an assignment allocates.** Slice the destination.
+- **`ctypes.cast` on a COM interface does not take a reference.** The cached
+  session managers dangled and killed the bridge with an access violation
+  minutes later, nowhere near the cause. `QueryInterface` takes it properly.
+- **MicroPython's small-int boundary**: shifting a 16-bit value up 40 bits
+  makes a 56-bit integer, which goes on the heap — thirty times a plane a frame
+  in the patch overlay.
+- **A crashed `code.py` suspends auto-reload**, so deploys appear to do nothing
+  until Ctrl-C then Ctrl-D over the console port.
+- **Test the sound, not the drawing.** The EQ drew correct curves for days
+  while writing `Filter: OFF` for every band.

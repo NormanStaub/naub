@@ -275,9 +275,15 @@ _FOOT_MV = memoryview(mx.planes[0])[_FOOT_O:_FOOT_O + mixer.W]
 
 def sync_foot():
     """The mode bar belongs to the mixer; copy it onto the screens that borrow
-    it so there is exactly one implementation of it."""
+    it so there is exactly one implementation of it.
+
+    EVERY plane of the config screen, not just the first.  It runs four FRC
+    planes whenever the shading flag is on screen, so a bar written to plane 0
+    alone appeared on one frame in four -- a 25% duty at 21 Hz, which is not a
+    dim mode bar, it is a flickering one."""
     eq_scr.planes[0][_FOOT_O:_FOOT_O + mixer.W] = _FOOT_MV
-    cfg.planes[0][_FOOT_O:_FOOT_O + mixer.W] = _FOOT_MV
+    for p in cfg.planes:
+        p[_FOOT_O:_FOOT_O + mixer.W] = _FOOT_MV
 
 
 def set_screen(v):

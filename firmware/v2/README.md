@@ -163,7 +163,8 @@ sliding in.
 
 ### The CONFIG screen
 
-**Adding settings: see [CONFIG_MENU.md](CONFIG_MENU.md).**
+**Adding settings: see [CONFIG_MENU.md](CONFIG_MENU.md).** What is still a
+placeholder, and what is not built at all: [STATUS.md](STATUS.md).
 
 The fourth mode. Three knobs, three jobs, labelled across the top of the screen
 because that is the affordance: **ENC1 the tabs, ENC2 the cursor, ENC3 the
