@@ -35,6 +35,18 @@ state you are in, and an invisible mode is exactly how someone changes a
 setting they did not mean to. Splitting "move" and "change" across two knobs
 does the same job with nothing hidden.
 
+**The list scrolls smoothly.** Rows are 16 px — two pages — so a settled window
+is five byte-slice copies. While it is easing toward the row the cursor is on,
+though, the window sits at offsets that are *not* multiples of 8, and the blit
+has to shift bits: the one place this screen leaves the page grid, deliberately
+and for about a dozen frames. `Config.step()` does the easing and returns
+`True` while it is moving, which is what asks the frame loop for the next
+redraw; when it arrives it returns `False` and the screen goes back to pushing
+the same bytes.
+
+A tab or submenu change **snaps** instead of easing. Sliding between two
+different lists is motion that means nothing.
+
 ---
 
 ## 2. A setting is a tuple
@@ -164,12 +176,18 @@ computed.
 perspective projection changes by well under a pixel per step at this size. A
 flipbook whose frames are identical is not a flipbook.
 
-**Say the one thing the patch is for.** `SHADING`'s art is a staircase, one
-step per level the mode can render, and deliberately *not* a sample of the
-dither: at six pixels a step, ordered dither at 20/40/60% is four fields of
-identical-looking noise — I tried it, and it says nothing. A staircase you can
-count says the thing you are choosing between. It cannot show the *temporal*
-half of a mode either; no still frame can.
+**`SHADING`'s art is a little waving flag**: a black-to-white ramp, dithered,
+inside a band displaced by a sine. The ramp is quantised to that mode's level
+count, which is what differs between the four — two levels give a hard edge
+across the middle, five give something that passes for a gradient at 30 pixels
+wide.
+
+Two details it needed, both found by drawing it wrong first. The band is
+**outlined**, because without an outline the flag dissolves wherever the ramp
+goes light and reads as a blob fading out rather than a shape. And the outline
+is **joined column to column**, because a sine sampled per column steps by more
+than a pixel and leaves a dotted trail otherwise. It still cannot show the
+*temporal* half of a mode; no still frame can.
 
 ## Units
 
@@ -299,8 +317,18 @@ cycle is the other way back, since nothing here is saved.
 | what changed | call | measured |
 |---|---|---|
 | a value (`adjust`, `click`) | rebuilds that row's strip for you, then `draw_list()` | 3.4 ms |
-| the cursor or scroll | `draw_list()` | 0.8 ms |
-| the tab | `render()` | 4.6 ms |
+| the cursor, settled | `draw_list()` | 1.9 ms |
+| the cursor, mid-slide | `draw_list()`, shifting bits | 7.7 ms |
+| the tab | `render()` | 5.1 ms |
+
+The mid-slide figure is what smooth scrolling costs: about six extra
+milliseconds a frame for the ~12 frames a scroll lasts, which still fits inside
+the 10.8 ms the frame loop is paced to, alongside the 1.8 ms frame push.
+
+That shift is as cheap as Python gets here. Measured against 256-entry lookup
+tables (6.5 ms vs the plain shift's 6.8 — 5%, for 4 kB of tables), `zip` over
+two memoryviews (11.0) and `bytes()` over a generator (11.4). The obvious loop
+wins; do not be clever with it.
 
 `nav`, `scroll`, `adjust` and `click` all return `True` when something actually
 changed, which is what the demo ORs into `cfg_dirty`:
@@ -314,9 +342,13 @@ Then the frame loop redraws once, at the end, however many knobs moved.
 **Nothing on this screen is on a timer**, and it should stay that way. The
 mixer and EQ redraw on a 16 ms tick because their meters move; a settings list
 changes when a knob does and not otherwise, so between events the loop pushes
-the same bytes and the mode holds the full 92.4 Hz. If you find yourself
-wanting a blink or a marquee here, price it first: it costs a redraw per tick
-for ever, to say something the inverted tab and the filled cursor already say.
+the same bytes and the mode holds the full 92.4 Hz.
+
+The scroll is not an exception to that: it asks for its own redraws through
+`step()` and stops asking when it arrives. That is the shape any animation here
+should take — self-limiting, and started by an input. If you find yourself
+wanting a blink or a marquee, price it first: those cost a redraw per tick *for
+ever*, to say something the inverted tab and the filled cursor already say.
 
 ---
 
@@ -330,10 +362,11 @@ for ever, to say something the inverted tab and the filled cursor already say.
 - **Slicing the source allocates.** `strip[a:b]` on the right of an assignment
   makes a copy; the row memoryviews in `self._mv` exist so `draw_list` never
   does. Slice the destination, never the source.
-- **Stay on the page grid.** Rows are 16 px because 16 is two pages, so
-  scrolling a row is a byte-slice blit. A 20 px row means a bit-shift per byte
-  across the whole list on every redraw, which is how a screen that costs
-  0.8 ms starts costing 8.
+- **Stay on the page grid.** Rows are 16 px because 16 is two pages, so a
+  settled list is five byte-slices. The smooth scroll leaves the grid on
+  purpose and pays 7.7 ms a frame for the dozen frames it lasts; a 20 px row
+  would pay that on *every* redraw, for ever, which is how a screen that costs
+  1.9 ms starts costing 8.
 - **The font is 8 px, upper case, ASCII.** `gfx.text_strip` refuses anything
   taller. Missing glyphs are silently substituted with `?`, so check before
   using a symbol — that is why `DEG` is hand-drawn.

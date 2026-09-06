@@ -214,8 +214,16 @@ writes the raw one, and turning the raw one moves the friendly one to whatever
 it now means. Panel default contrast is 25, top and bottom of that same range.
 
 `SHADING` cycles the grayscale modes from the bring-up experiment
-(`graybars.MODES`) with a staircase patch beside it, one step per level the
-mode renders. Nothing is wired to it yet. DIM AFTER and the SYS/OS rows remain
+(`graybars.MODES`), with a little waving flag beside it — a dithered
+black-to-white ramp in a band displaced by a sine, quantised to that mode's
+level count. Nothing is wired to it yet.
+
+The list **scrolls smoothly**, which is the one place this screen leaves the
+page grid: mid-slide the window sits at an offset that is not a multiple of 8,
+so the blit shifts bits and costs 7.7 ms against 1.9, for the dozen frames a
+scroll lasts. It still fits the 10.8 ms the loop is paced to. A tab or submenu
+change snaps instead — sliding between two different lists is motion that means
+nothing. DIM AFTER and the SYS/OS rows remain
 placeholders in the right shape, so the list, the scrolling and the tabs have
 something to be tested against.
 

@@ -43,7 +43,12 @@ def shots():
     cfg, mx = build()
     out = []
 
-    def snap(tag):
+    def snap(tag, settle=True):
+        # The list slides; let it arrive before the shot, exactly as the frame
+        # loop does.  Without this the cursor moves and the window does not,
+        # which is a preview of a state the panel never actually shows.
+        while settle and cfg.step():
+            pass
         cfg.render()
         out.append((frc.avg_image([compose(cfg, mx)], SCALE), tag))
 
@@ -62,18 +67,22 @@ def shots():
     snap('BRIGHTNESS 70% -- live on the backlight')
 
     cfg.scroll(+1)
-    snap('SHADING, with a test patch of what each mode gets you')
+    snap('SHADING, with a little waving gradient beside it')
 
     for _ in range(3):
         cfg.adjust(-1)
-    snap('SHADING 1F SPATIAL: two levels, and the patch says so')
+    snap('1F SPATIAL: two levels, so the flag is a hard edge')
 
     cfg.adjust(+2)
-    snap('3F HYBRID: four levels')
+    snap('3F HYBRID: four levels, and the ramp reads as a ramp')
 
     cfg.adjust(+1)
     cfg.scroll(+2)
-    snap('SCROLL to the end: the window follows the cursor')
+    for _ in range(4):
+        cfg.step()
+    snap('mid-slide: the window sits between rows, 4 frames in', settle=False)
+
+    snap('... and settled, at the end of the list')
 
     cfg.nav(-1)
     snap('MENU NAV back one tab: SYS')

@@ -798,11 +798,14 @@ while True:
         if reveal == 0.0 and rev_t == 0.0:
             close_drawer()
     elif mx.mode == CONFIG_MODE:
-        # Nothing here is on a tick: a settings list changes when a knob does
-        # and not otherwise, so between events the loop pushes the same bytes.
+        # Still nothing on a TICK: a settings list changes when a knob does and
+        # not otherwise.  The list's own slide is the one animation, and it
+        # asks for the redraws itself, for the dozen frames it lasts.
         if bar_moving:
             bar_moving = mx.step_foot()
             sync_foot()
+        if cfg.step():
+            cfg_dirty = True
         if cfg_dirty:
             cfg.render()
             sync_foot()

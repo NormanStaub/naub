@@ -51,6 +51,8 @@ so it redraws on input and the frame loop pushes the same bytes in between.
 
 See CONFIG_MENU.md for how to add to any of this.
 """
+import math
+
 import gfx
 
 W = gfx.W
@@ -65,6 +67,13 @@ PAGE_FOOT = 7                     # mixer.py's, copied in by the caller
 
 ROW_P = 2                         # pages per row: 16px, name over value
 NVIS = NLIST // ROW_P             # rows that show in full (the next shows half)
+ROW_H = ROW_P * 8                 # ... in pixels, which is what scrolling uses
+
+# The list scrolls smoothly, so the window lands on offsets that are not
+# multiples of 8 and the blit has to shift bits.  That costs -- see step() --
+# but only while it is moving, which is a couple of hundred milliseconds.
+SCROLL_EASE = 0.30                # fraction of the remaining distance a frame
+SCROLL_SNAP = 0.4                 # px: below this, land on it
 
 # The three cells match the mixer's columns exactly, so the header, the tabs
 # and every other screen's furniture line up down the whole stack.
@@ -139,6 +148,10 @@ def _angle_art(n=9, w=ART_W, h=ROW_P * 8 - 2, y0=1):
     return tuple(frames)
 
 
+# 4x4 ordered dither, for putting a gradient on a panel with two colours
+BAYER = (0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5)
+
+
 ANGLE_ART = _angle_art()
 ANGLES = tuple('%d' % (10 * (i + 1)) for i in range(len(ANGLE_ART)))
 
@@ -151,27 +164,48 @@ VIEW_CONTRAST = tuple(int(40 + (25 - 40) * i / (len(ANGLES) - 1.0) + 0.5)
                       for i in range(len(ANGLES)))
 VIEW_DEFAULT = len(ANGLES) - 1          # 90 deg -> contrast 25, the default
 
-def _shade_art(planes=(1, 2, 3, 4), w=ART_W, h=ROW_P * 8 - 2, y0=1):
-    """A staircase per shading mode: one step per level it can render.
+def _shade_art(planes=(1, 2, 3, 4), w=ART_W, h=ROW_P * 8 - 2, y0=1,
+               amp=2, waves=1.5):
+    """A little waving flag per shading mode: a black-to-white ramp, dithered,
+    inside a band displaced by a sine so it reads as cloth rather than a swatch.
 
-    A staircase and not a sample of the dither, deliberately.  What you are
-    choosing between is how many shades the mode buys, and at six pixels a step
-    an ordered dither at 20/40/60% is four fields of identical-looking noise --
-    tried it, it says nothing.  A staircase you can count says the one thing
-    the patch is for.  It cannot show the TEMPORAL half of a mode either; no
-    still frame can.
+    The ramp is quantised to that mode's level count, which is what differs
+    between the four -- two levels give a hard edge across the middle, five
+    give something that passes for a gradient at 30 pixels wide.
+
+    The band is OUTLINED, and the outline is joined column to column.  Without
+    the outline the flag dissolves wherever the ramp goes light, so it reads as
+    a blob fading out rather than a shape; without the joining it is a dotted
+    trail wherever the sine steps more than a pixel between columns.
     """
     frames = []
     for np in planes:
         n = np + 1                       # levels, counting white and black
+        band = h - 2 * amp
         buf = bytearray(ROW_P * w)
+
+        def ink(x, y):
+            buf[(y >> 3) * w + x] |= 1 << (y & 7)
+
+        prev = None
         for x in range(w):
-            step = x * n // w
-            if step != (x + 1) * n // w and x < w - 1:
-                continue                 # 1px gap, so the steps are countable
-            hh = int(h * (step + 1) / float(n) + 0.5)
-            for yy in range(y0 + h - hh, y0 + h):
-                buf[(yy >> 3) * w + x] |= 1 << (yy & 7)
+            shade = 1.0 - x / (w - 1.0)                    # black on the left
+            q = int(shade * (n - 1) + 0.5) / (n - 1.0)
+            # floor(v + 0.5), not int(v + 0.5): int() truncates toward zero,
+            # so the trough of the wave rounds the wrong way
+            dy = int(math.floor(
+                amp * math.sin(2.0 * math.pi * waves * x / (w - 1.0)) + 0.5))
+            top = y0 + amp + dy
+            thr = q * 16.0
+            for yy in range(top, top + band):
+                if BAYER[(yy & 3) * 4 + (x & 3)] < thr:
+                    ink(x, yy)
+            lo = top if prev is None else (top if top < prev else prev)
+            hi = top if prev is None else (prev if top < prev else top)
+            for yy in range(lo, hi + 1):
+                ink(x, yy)
+                ink(x, yy + band - 1)
+            prev = top
         frames.append(bytes(buf))
     return tuple(frames)
 
@@ -266,6 +300,8 @@ class Config:
         self.tab = tab                # which TAB is lit at the bottom
         self.view = tab               # ... and which view is on screen
         self.stack = []               # how we got here, for backing out
+        self.py = 0.0                 # where the window IS, in pixels
+        self.pt = 0.0                 # ... and where it is going
         self._hstrip = tuple(gfx.text_strip(font, h, SPACING) for h in HEAD)
         self._tstrip = tuple(gfx.text_strip(font, t[0], SPACING) for t in tabs)
         self._more = gfx.text_strip(font, '>', SPACING)
@@ -414,6 +450,7 @@ class Config:
             return False
         self.tab = t
         self.view = t
+        self._snap()
         return True
 
     def back(self):
@@ -421,6 +458,7 @@ class Config:
         if not self.stack:
             return False
         self.view = self.stack.pop()
+        self._snap()
         return True
 
     def enter(self):
@@ -431,7 +469,36 @@ class Config:
             return False
         self.stack.append(v)
         self.view = child
+        self._snap()
         return True
+
+    def _snap(self):
+        """Put the window where the new view left it, with no animation: a
+        slide between two different lists is motion that means nothing."""
+        self.pt = self.py = float(self.vtop[self.view] * ROW_H)
+
+    def step(self):
+        """Ease the window toward the row the cursor is on.  -> True while it
+        is still moving, which is what tells the caller to keep redrawing.
+
+        MEASURED on the board: a page-aligned redraw is 1.9 ms and a shifted
+        one 7.7 ms, so a scroll costs about six extra milliseconds a frame for
+        the ~12 frames it lasts -- which still fits the 10.8 ms the loop is
+        paced to, alongside the 1.8 ms frame push.  Worth it: a list that jumps
+        by a whole row gives you nothing to tell you which way it went.
+
+        The shift is as cheap as it gets in Python here.  Measured against 256
+        entry lookup tables (6.5 vs 6.8 ms -- 5%, for 4 kB of tables), zip over
+        two memoryviews (11.0) and bytes() over a generator (11.4); the obvious
+        loop wins."""
+        d = self.pt - self.py
+        if d > SCROLL_SNAP or d < -SCROLL_SNAP:
+            self.py += d * SCROLL_EASE
+            return True
+        if self.py != self.pt:
+            self.py = self.pt
+            return True
+        return False
 
     def scroll(self, d):
         """ENC2: the cursor, and the window follows it."""
@@ -449,6 +516,7 @@ class Config:
             top = c - NVIS + 1
         hi = n - NVIS
         self.vtop[v] = 0 if hi < 0 else (hi if top > hi else top)
+        self.pt = float(self.vtop[v] * ROW_H)
         return True
 
     def adjust(self, d):
@@ -587,37 +655,59 @@ class Config:
         v = self.view
         mv = self.vmv[v]
         npage = len(self.vrows[v]) * ROW_P
-        base = self.vtop[v] * ROW_P
+        off = int(self.py + 0.5)
+        pg = off >> 3
+        sh = off & 7
         for k in self._ink:
             fb = self.planes[k]
             for p in range(NLIST):
                 o = (LIST_P0 + p) * W
-                sp = base + p
-                fb[o:o + W] = mv[sp] if sp < npage else _ZERO
-            # the cursor: a filled marker OR'd over the ring already in place
-            wp = self.vcur[v] * ROW_P + 1 - base
-            if 0 <= wp < NLIST:
-                o = (LIST_P0 + wp) * W + MARK_X
-                for j in range(MARK_W):
-                    fb[o + j] |= DISC[j]
-            self._scrollbar(fb, npage)
+                sp = pg + p
+                a = mv[sp] if 0 <= sp < npage else _ZERO
+                if sh == 0:
+                    fb[o:o + W] = a          # settled: a byte-slice, as before
+                else:
+                    b = mv[sp + 1] if 0 <= sp + 1 < npage else _ZERO
+                    r = 8 - sh
+                    for x in range(W):
+                        fb[o + x] = ((a[x] >> sh) | (b[x] << r)) & 0xFF
+            self._cursor(fb, off)
+            self._scrollbar(fb, npage, off)
             o = LIST_P1 * W                       # the rule above the tabs
             for x in range(W):
                 fb[o + x] |= RULE
 
-    def _scrollbar(self, fb, npage):
+    def _cursor(self, fb, off):
+        """The filled marker, over the empty one baked into the row.  Drawn a
+        pixel at a time because mid-scroll it straddles a page boundary."""
+        v = self.view
+        wy = self.vcur[v] * ROW_H + 8 - off
+        h = NLIST * 8
+        for j in range(MARK_W):
+            m = DISC[j]
+            for bit in range(8):
+                if (m >> bit) & 1:
+                    y = wy + bit
+                    if 0 <= y < h:
+                        fb[(LIST_P0 + (y >> 3)) * W + MARK_X + j] |= 1 << (y & 7)
+
+    def _scrollbar(self, fb, npage, off):
         """A 2px solid thumb against a 1px dotted track.  Both the same width
         and the thumb is invisible; the track dotted, so it reads as a track
         and not as a second thumb."""
         h = NLIST * 8
-        if npage <= NLIST:
+        total = npage * 8
+        if total <= h:
             top, length = 0, h
         else:
-            length = h * NLIST // npage
+            length = h * h // total
             if length < 6:
                 length = 6
-            top = ((h - length) * (self.vtop[self.view] * ROW_P)
-                   // (npage - NLIST))
+            top = (h - length) * off // (total - h)
+            if top > h - length:      # the last row is allowed to sit above a
+                top = h - length      # blank half-row; the thumb is not
+            elif top < 0:
+                top = 0
         for p in range(NLIST):
             thumb = track = 0
             for y in range(8):
