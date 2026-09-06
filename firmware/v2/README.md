@@ -17,6 +17,7 @@ device/   modules that live on the CIRCUITPY drive (pure CircuitPython)
   idle.py      backlight: full while in use, 10% after 1 min, off after 5
   wheel.py     which apps the switcher offers, and for how long
   ballistics.py how every meter moves: one home for FALL/PEAK_FALL/PEAK_GAP
+  config.py    the CONFIG screen: settings in tabs, driven by the three knobs
   ccfont.py    C&C Red Alert font (TINY h8 full ASCII, SML h16, BIG digits h27)
 demos/    ready-to-flash examples (each becomes code.py) + generated data
   demo_mixer.py       the mixer screen + the app-switcher dropdown  <- the UI
@@ -159,6 +160,46 @@ per-app peak polls on the PC, for no visible difference. The loopback capture
 starts and stops with the EQ screen: measured **62–79 ms to start**, inside the
 220 ms mode wipe, so the spectrum is there by the time the screen finishes
 sliding in.
+
+### The CONFIG screen
+
+The fourth mode. Three knobs, three jobs, labelled across the top of the screen
+because that is the affordance: **ENC1 the tabs, ENC2 the cursor, ENC3 the
+focused value** — turned live, with no arming and no commit step. A hidden edit
+mode is what makes people change settings they did not mean to, and there is no
+room on 128×64 to show which state you are in.
+
+A setting is a tuple, and adding one is a line:
+
+```python
+(name, kind, key, spec, default, art)
+('DISPLAY VIEW ANGLE', ENUM, 'view_angle', ANGLES, 4, ANGLE_ART)
+```
+
+`spec` is whatever the kind needs (ENUM a tuple of labels, PCT a `(lo, hi,
+step)`, BOOL nothing, INFO the string). Exactly one function knows what a kind
+looks like and one more knows what a detent does to it; nothing else has a
+special case. `key` is a string from the start, because the row order will
+change and position is the wrong handle the day a value is sent to the host or
+written to disk. `art` is a tuple of pictures indexed **by the value** — the
+whole view-angle flipbook is `art[val]`, no logic.
+
+Rows are **16 px, which is two pages**: name on the top line, marker and value
+below, a picture spanning both on the right. Two rows show in full and a third
+shows its top half, which is also how you can tell there is more below. Because
+16 is a multiple of 8, scrolling a whole row is still a byte-slice blit — the
+same reason every other screen here is cheap.
+
+Nothing on this screen is on a timer. The mixer and EQ redraw on a 16 ms tick
+because their meters move; a settings list changes when a knob does and not
+otherwise, so it redraws on input and the loop pushes the same bytes in
+between. Measured on the board: full render 4.6 ms, a SCROLL detent 0.8 ms, a
+SELECT detent 3.4 ms (it rebuilds that row's strip), and the screen costs
+7.5 kB with 322 kB still free.
+
+Only `DISPLAY VIEW ANGLE` is real, and even that is a drawing — nothing is
+wired to it yet. The rest are placeholders in the right shape so the list, the
+scrolling and the tabs have something to be tested against.
 
 ### One program is not one session
 

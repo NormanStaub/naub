@@ -41,9 +41,11 @@
 # or key wakes it, and the wake also does whatever it was pressed for -- a mixer
 # you have to poke twice is worse than one that is dim.
 #
-# Only APP CTRL is implemented; flipping to EQ / CUSTOM 1 / CUSTOM 2 moves the
-# mode bar's ticks and label, and those screens land later.  The switcher opens
-# only in APP CTRL, since that is the mode it belongs to.
+# CONFIG is the last mode: three knobs across the top drive it, labelled on
+# screen -- ENC1 the tabs, ENC2 the cursor, ENC3 the focused value, live.  Only
+# DISPLAY VIEW ANGLE is a real setting and even that is a drawing for now; the
+# rest are placeholders in the right shape.  CUSTOM 1 is still a stub.  The
+# switcher opens only in APP CTRL, since that is the mode it belongs to.
 #
 # The mixer screen is binary (one plane, ~400 Hz); the switcher's icons are FRC
 # grayscale, so the frame cycles four ways while the drawer is open.  n_planes
@@ -52,8 +54,8 @@
 # Deploy: python host/deploy.py mixer
 import random
 import time
-import naubhw, ccfont, drawer, eqcurve, eqscreen, idle, link, media, mixer
-import wheel, wipe
+import naubhw, ccfont, config, drawer, eqcurve, eqscreen, idle, link, media
+import mixer, wheel, wipe
 import switcher_data
 
 HOLD = 0.6            # seconds held = mute rather than open the picker
@@ -98,6 +100,7 @@ _ZERO_SPEC = [0.0] * 21   # no host = no spectrum, so show a flat floor
 
 APP_MODE = 0          # index into mixer.MODES that owns the mixer screen
 EQ_MODE = 1           # ... and the one that owns the EQ screen
+CONFIG_MODE = 3       # ... and the one that owns the settings screen
 
 # What a detent moves, per parameter.  Frequency and Q step in their LOG
 # mapping (see eqcurve), so a detent is the same musical distance everywhere
@@ -124,9 +127,11 @@ dr = drawer.Drawer(switcher_data.ICONS, switcher_data.APPS, ccfont.TINY)
 wh = wheel.Wheel()                                # what the switcher offers
 eq_scr = eqscreen.EqScreen(ccfont.TINY)
 eq_cur = eqcurve.Curve(nband=eqscreen.NBAND)
+cfg = config.Config(ccfont.TINY)
 mx_views = [disp.make_views(fb) for fb in mx.planes]
 dr_views = [disp.make_views(fb) for fb in dr.planes]
 eq_views = [disp.make_views(fb) for fb in eq_scr.planes]
+cfg_views = [disp.make_views(fb) for fb in cfg.planes]
 
 # LOW is a low shelf, MID a peak, HIGH a high shelf: the tone-control split,
 # and what the host writes as LSC / PK / HSC.  The host overwrites all of this
@@ -140,6 +145,7 @@ for _i, (_k, _f, _q) in enumerate(EQ_INIT):
     eq_scr.handles[_i] = eq_cur.column_of(_f)
 eq_param = [P_GAIN] * eqscreen.NBAND      # which parameter each knob edits
 eq_dirty = True
+cfg_dirty = False                         # the settings screen needs redrawing
 eq_ys = None                              # cached curve; None = recompute
 sys_lv = [0.0] * eqscreen.NMETER          # the system spectrum, from the host
 
@@ -251,9 +257,10 @@ _FOOT_MV = memoryview(mx.planes[0])[_FOOT_O:_FOOT_O + mixer.W]
 
 
 def sync_foot():
-    """The mode bar belongs to the mixer; copy it onto the EQ screen so there
-    is exactly one implementation of it."""
+    """The mode bar belongs to the mixer; copy it onto the screens that borrow
+    it so there is exactly one implementation of it."""
     eq_scr.planes[0][_FOOT_O:_FOOT_O + mixer.W] = _FOOT_MV
+    cfg.planes[0][_FOOT_O:_FOOT_O + mixer.W] = _FOOT_MV
 
 
 def set_screen(v):
@@ -321,9 +328,26 @@ def close_drawer():
     set_screen(screen_views())
 
 
-def screen_views():
-    """Whichever screen the current mode owns."""
-    return eq_views if mx.mode == EQ_MODE else mx_views
+def screen_views(m=None):
+    """Whichever screen a mode owns.  One mapping, in one place: with three
+    screens the was-this/is-that pairs the wipe used to need had started to
+    turn into combinatorics."""
+    m = mx.mode if m is None else m
+    if m == EQ_MODE:
+        return eq_views
+    if m == CONFIG_MODE:
+        return cfg_views
+    return mx_views
+
+
+def screen_planes(m=None):
+    """... and its frame, which is what the wipe needs."""
+    m = mx.mode if m is None else m
+    if m == EQ_MODE:
+        return eq_scr.planes[0]
+    if m == CONFIG_MODE:
+        return cfg.planes[0]
+    return mx.planes[0]
 
 
 def is_live(now):
@@ -374,21 +398,23 @@ def flip_mode(d):
     push the label along with them; bar_moving keeps stepping that until it
     settles."""
     global bar_moving, eq_ys
-    was_eq = mx.mode == EQ_MODE
+    was = mx.mode
     bar_moving = mx.set_mode(mx.mode + d)
     lk.send("mode %d" % mx.mode)
     print("mode %d %s" % (mx.mode, mixer.MODES[mx.mode]))
     if mx.mode == EQ_MODE:
         eq_ys = None
         eq_refresh(True)
-    elif was_eq:
+    elif mx.mode == CONFIG_MODE:
+        cfg.render()
+        sync_foot()
+    elif was == EQ_MODE or was == CONFIG_MODE:
         mx.render()
     # snapshot what is on screen now, then wipe to what the new mode draws
     # The wipe follows the way you moved through the list: forward sweeps
     # right to left, back sweeps left to right, so stepping back to APP CTRL
     # visibly undoes the step that left it.
-    tr.start(eq_scr.planes[0] if was_eq else mx.planes[0],
-             eq_scr.planes[0] if mx.mode == EQ_MODE else mx.planes[0],
+    tr.start(screen_planes(was), screen_planes(),
              wipe.RIGHT_TO_LEFT if d > 0 else wipe.LEFT_TO_RIGHT)
     set_screen(tr_views)
 
@@ -523,6 +549,15 @@ while True:
             n = len(dr.apps) - 1.0
             t = target + d
             target = 0.0 if (t < 0 or n < 0) else (n if t > n else float(t))
+        elif mx.mode == CONFIG_MODE:
+            # The three jobs are labelled across the top of the screen, which
+            # is the affordance: turn = it happens, no arming, no commit.
+            if c == 0:
+                cfg_dirty = cfg.nav(d) or cfg_dirty
+            elif c == 1:
+                cfg_dirty = cfg.scroll(d) or cfg_dirty
+            else:
+                cfg_dirty = cfg.adjust(d) or cfg_dirty
         elif mx.mode == EQ_MODE:
             b = eq_cur.bands[c]
             p = eq_param[c]
@@ -581,6 +616,9 @@ while True:
                     mx.draw_vol()
                     lk.send("mute %d %d" % (c, 1 if mx.mute[c] else 0))
                     print("mute %d %d" % (c, mx.mute[c]))
+            elif mx.mode == CONFIG_MODE:          # ENC3 click flips a toggle
+                if c == 2 and cfg.click():
+                    cfg_dirty = True
             elif mx.mode == EQ_MODE:              # cycle gain -> freq -> Q
                 eq_param[c] = (eq_param[c] + 1) % 3
                 eq_dirty = True
@@ -686,6 +724,16 @@ while True:
         dr.compose(int(reveal))
         if reveal == 0.0 and rev_t == 0.0:
             close_drawer()
+    elif mx.mode == CONFIG_MODE:
+        # Nothing here is on a tick: a settings list changes when a knob does
+        # and not otherwise, so between events the loop pushes the same bytes.
+        if bar_moving:
+            bar_moving = mx.step_foot()
+            sync_foot()
+        if cfg_dirty:
+            cfg.render()
+            sync_foot()
+            cfg_dirty = False
     elif mx.mode == EQ_MODE:
         if bar_moving:
             bar_moving = mx.step_foot()

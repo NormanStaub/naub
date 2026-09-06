@@ -94,7 +94,7 @@ SPACING = 0                   # ccfont.TINY advances already carry side bearing;
                               # 1px more would push most app names into a marquee
 
 # ---- the mode bar (page 7) -------------------------------------------------
-MODES = ('APP CTRL', 'EQ', 'CUSTOM 1', 'CUSTOM 2')
+MODES = ('APP CTRL', 'EQ', 'CUSTOM 1', 'CONFIG')
 
 TICK_MASK = 0xFF              # the full height of the bar: the ticks hang off
                               # the rule like cabinet dividers
