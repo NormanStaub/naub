@@ -325,8 +325,21 @@ liveness timeout and the backlight fades.
 costs
 1.75 ms of the ~2.7 ms the UI spends on one, and the SPI clock could be
 doubled for another 0.6 ms — the redraws are the rest, and they run on a
-16 ms tick, so *what you see moving* updates at 62.5 Hz however fast the loop
-spins. Two consequences worth remembering: pushing the same frame 300 times a
+16 ms tick — which is a rate the code asks for and does not get. That gate can
+only be *tested* when a frame comes round, so it fires on the next whole frame
+at or after 16 ms: 18.4 ms while the loop was free-running at 380 fps, 21.7 ms
+now that a frame is 10.8. The meters have always run at 46 Hz, not the 62.5 the
+constant names.
+
+**Which is why the eased animations state milliseconds.** A fraction of the
+remaining distance applied once a frame states a speed *per frame*, and the
+frame rate is not a constant of the design — pacing the loop to the panel made
+the drawer's fall and the shelf's scroll four times slower without anyone
+touching a number. `DROP_MS`, `SCROLL_MS` and `WIPE_MS` say the duration;
+`_ease()` derives the per-frame fraction from `FRAME_NS` once at import. If you
+add an animation here, add it that way.
+
+Two consequences worth remembering: pushing the same frame 300 times a
 second buys nothing, and the cheapest optimisation available is always to stop
 redrawing something that did not change. Latest example: the EQ screen was
 rebuilding its header on every meter tick — three labels that had not moved,
@@ -762,9 +775,14 @@ Four pages is not much, and the layout is what buys the icons their size back �
   short slice assignment silently **resizes** the destination bytearray — so
   the PC preview looks perfect and only the panel breaks. `deploy.py` now ships
   `switcher_data.py` with every deploy for the same reason.
-- **The wipe carries a rule on its leading edge** — the last revealed row is
+- **The wipe carries a rule on its leading edge** — the last revealed rows are
   forced solid while the panel is moving, so it reads as a surface sliding over
-  the meters rather than as content appearing out of nowhere.
+  the meters rather than as content appearing out of nowhere. Two rows, not
+  one (`wipe.EDGE_W`, shared with the mode change so the two agree): at the
+  panel's default contrast of 25 a single row of ink, on the glass for one
+  animation step, is most of the way to invisible. The extra row goes *behind*
+  the edge, into the panel it has already revealed, so the boundary stays on
+  `reveal` and the thickness reads as a trail.
 - **Apps with no icon get a placeholder** — a rounded frame with the app's
   initial. The session list and the icon catalogue come from different places
   (apps making noise vs. apps with a window), so a mismatch is normal.

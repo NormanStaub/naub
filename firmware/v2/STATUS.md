@@ -16,6 +16,15 @@ detail lives in the commit messages and in `README.md` / `CONFIG_MENU.md` /
 - **The frame loop is paced to the glass at 92.3 Hz.** The ST7565R scans at
   `fOSC/(4*65)` — 77 Hz typical, 92 at the fast end of tolerance — so the loop
   used to rewrite the controller's RAM about five times per displayed frame.
+- **Wipe edges are 2 px**, and eased animations state a duration rather than a
+  per-frame fraction. Capping the loop had retimed them: the drawer's fall and
+  the shelf's scroll went from ~29 ms to 110 (4x), and the mode wipe -- gated
+  on the 16 ms meter tick, which can only be tested once a frame and so fires
+  every 21.7 -- crossed the panel in 13 jumps of up to 27 px. It is frame-locked
+  now: same 282 ms, 27 steps. `_ease()` derives the fraction from `FRAME_NS`.
+- **The meters run at 46 Hz, not 62.5**, for that same gating reason, and always
+  have. `ballistics.FALL` was tuned by eye against 46, so it was left alone and
+  the docstring corrected.
 - **Every clock is `time.monotonic_ns()`.** The float `monotonic()` is single
   precision here and its granularity doubles as uptime doubles (0.488 ms at
   1.5 h, ~8 ms after a day). A 16 ms tick timed against that eventually stops
