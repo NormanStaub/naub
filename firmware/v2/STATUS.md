@@ -56,6 +56,11 @@ detail lives in the commit messages and in `README.md` / `CONFIG_MENU.md` /
   transcribed, so it previews the switcher's icons honestly. That is why the
   screen runs four FRC planes.
 - The list scrolls smoothly.
+- **A `CARD` kind**: a page that is a picture rather than a list, and the
+  `SYS > GITHUB` page that uses it — the repo's QR beside the link it encodes.
+  A card's view simply has no rows, so the cursor, scrollbar and value knob all
+  do nothing without being told cards exist. `gen_qr.py` decodes the code before
+  baking it, and the rendered framebuffer decodes back to the URL.
 
 ### Host
 - The loopback capture (a 48 kHz thread) runs **only while the EQ screen is
@@ -120,6 +125,37 @@ is the `apply_display()` pattern in `CONFIG_MENU.md` §4.
   the bridge's 2 ms sleep rounds up to it. Left alone deliberately: fixing it
   means `timeBeginPeriod(1)` and a loop spinning sixteen times as often, which
   is more load on the PC to feed a meter its own ballistics already smooth.
+
+---
+
+## Portability
+
+**Windows is the reference platform; the code should stay as general-purpose as
+is reasonable, Linux included.** `MACOS_PORT.md` is the study behind that — the
+short version is that transport, deploy, the bridge loop, system volume and the
+build-time tooling port cleanly, while per-app metering and per-app volume are
+where the platforms genuinely diverge. Linux has **not** been studied; the shape
+looks more favourable than macOS's, because PipeWire and PulseAudio expose
+per-stream volume and peak monitoring the way WASAPI does, but nothing here has
+been verified against them and none of that should be quoted as a finding.
+
+The rule for ongoing work: keep platform-specific calls behind the module that
+owns them, and prefer a platform-neutral library to a second platform-specific
+one where the cost is comparable. Three items outstanding, all found by the
+macOS study and all worth fixing on Windows anyway:
+
+| where | what |
+|---|---|
+| `naub_bridge.find_ports()` | `_iface()` reads `MI_nn` from the hwid, a Windows registry convention, and falls back to a trailing `:N` in `p.location`. Neither is reliable elsewhere, and on macOS `comports()` returns a `cu.*` *and* a `tty.*` node for every interface, so the console/data pair would be picked wrongly. Needs a per-platform branch. |
+| `host/gdifont.py` | GDI, and its docstring blames Pillow for something Pillow supports (`.FON` opens with `index=`; the real fault is an unreachable `FT_ENCODING_NONE` charmap). Build-time only, so the answer is `freetype-py` — one platform-neutral path, not a second platform-specific one. |
+| `naub_bridge --rate` | 50 means a measured 31.5 Hz only because of Windows' 15.6 ms timer granularity. Anywhere else it would really be 50, which is the wrong default on a platform where a poll costs a captured buffer instead of a free peak. The rate should be stated, not inherited from a scheduler quirk. |
+
+The structural move, whenever it is worth doing: split `appmeter` / `eqapo` /
+`sysmeter` into platform-suffixed modules behind a small factory — the shape the
+V1 `host/naub_host/` already used (`audio_windows.py`, `eq_windows.py`).
+`naub_bridge.py` needs three changes to be platform-neutral: `PIN_PATH`, the
+`_iface()` branch, and `import appmeter` becoming a dispatch. Doing that on
+Windows first makes any port additive rather than a fork.
 
 ---
 

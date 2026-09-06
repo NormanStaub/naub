@@ -19,7 +19,7 @@ DEMOS = os.path.normpath(os.path.join(HERE, '..', 'demos'))
 LIBS = ('boot.py', 'gfx.py', 'ballistics.py', 'ccfont.py', 'st7565.py',
         'naubhw.py', 'link.py',
         'mixer.py', 'drawer.py', 'media.py', 'eqcurve.py', 'eqscreen.py',
-        'wipe.py', 'idle.py', 'wheel.py', 'config.py')
+        'wipe.py', 'idle.py', 'wheel.py', 'qrdata.py', 'config.py')
 # Data modules a LIB needs, shipped whatever is being deployed: drawer.py
 # imports nothing itself, but every user of it needs the icon blocks, and the
 # blocks have to match drawer.TIERS.  Deploying a one-off script without these

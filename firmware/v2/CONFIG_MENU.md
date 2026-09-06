@@ -153,6 +153,46 @@ There is no automatic BACK row and no breadcrumb trail beyond the one bar. Both
 would cost a row of a five-row window to say what the inverted bar and the
 knob labels already say.
 
+## Adding a card
+
+A `CARD` row is a page that is a **picture rather than a list** — the GITHUB
+page is the one that exists. Its `spec` is a builder called once at
+construction:
+
+```python
+def _github_card(font):
+    buf = bytearray(NLIST * W)      # the whole window, 5 pages x 128
+    ...
+    return bytes(buf)
+
+SYS = (...,
+       ('GITHUB', CARD, 'github', _github_card, 0, None, None))
+```
+
+Entering and backing out are exactly `PAGE`'s: SELECT-click in, MENU NAV out,
+a `>` on the row, an inverted `<GITHUB` bar on page 6. What makes it different
+is one line — **a card's view has no rows**:
+
+```python
+self.vchild[v][i] = self._add_view((), r[F_NAME], r[F_SPEC](self.font))
+```
+
+Everything that walks rows then finds none, so the cursor, the scrollbar, the
+value knob and the shading overlay all correctly do nothing without any of them
+being told that cards exist. `draw_list()` branches once, on `vcard[v]`, and a
+card costs a single 640-byte copy — cheaper than the list it replaces, because
+there is no window to slide.
+
+The one thing a card does **not** get is a redraw. It is composed at
+construction and never again, which is the right default for anything a card is
+good for; if you ever want a live one, it needs the same treatment `step()`
+gives the flag, and the same justification.
+
+**Two knobs are lying while a card is up.** The header still reads
+`SCROLL | SELECT` and neither does anything. That is a known wart, left alone
+because the header is a fixed affordance across every screen — but if a second
+card ever lands, blanking those two cells for row-less views is the fix.
+
 ## Adding artwork
 
 `art` is indexed by the value, so a flipbook is `art[val]` and there is no

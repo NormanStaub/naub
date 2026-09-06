@@ -214,6 +214,22 @@ over nine steps. The two rows agree in both directions — the friendly one
 writes the raw one, and turning the raw one moves the friendly one to whatever
 it now means. Panel default contrast is 25, top and bottom of that same range.
 
+`SYS > GITHUB` is a **card** — a page that is a picture rather than a list. It
+shows the repo's QR code beside the link it encodes,
+`https://github.com/NormanStaub/naub`. Both, not either: the code is the point
+on a panel with no keyboard, but a QR is unreadable to a person, so if it will
+not scan — or you are looking at a photograph of the panel — the text is the
+only thing that says where it goes.
+
+The code is drawn at **one pixel per module**, which is not a choice. 37 modules
+(a version-3 code plus the 4-module quiet zone the spec requires) is already 37
+of this window's 40 pixel rows, so there is no room to scale it and it has to
+earn its scannability from contrast rather than size. `host/gen_qr.py` bakes
+`device/qrdata.py` from `firmware/naub_qr-code.png` and **verifies what it is
+baking** — a QR is opaque, so shipping the wrong URL is a mistake you would
+otherwise find with a phone. The rendered framebuffer has been decoded back to
+the URL as a test.
+
 `SHADING` cycles the grayscale modes from the bring-up experiment, with a
 little waving flag beside it that **cycles while the row is highlighted** — a
 black-to-white gradient in a band displaced by a sine, 16 phases of it.

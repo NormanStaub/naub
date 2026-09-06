@@ -54,6 +54,7 @@ See CONFIG_MENU.md for how to add to any of this.
 import math
 
 import gfx
+import qrdata
 
 W = gfx.W
 _ZERO = bytes(W)
@@ -103,13 +104,33 @@ DEG = (0x02, 0x05, 0x02)          # ccfont has no degree glyph; this is one
 
 HEAD = ('MENU NAV', 'SCROLL', 'SELECT')
 
+# ---- the GITHUB card -------------------------------------------------------
+# The QR is drawn at ONE PIXEL PER MODULE, which is not a choice: 37 modules is
+# already 37 of the 40 pixel rows this window has, so there is no room to scale
+# it and the code has to earn its scannability from contrast instead of size.
+# That is also why qrdata carries the 4-module quiet zone rather than leaving it
+# to a margin here -- a later layout tweak could eat a margin without anyone
+# noticing the code had stopped scanning.
+QR_X, QR_Y = 1, 1
+# The link, beside it, in the 89 px the QR leaves.  Both halves measure exactly
+# 78 px at ccfont.TINY, so they are centred in that space as a block; splitting
+# after the last slash of the host is the one break that keeps them equal.
+URL_LINES = ('https://github.com/', 'NormanStaub/naub')
+TXT_X = 44
+TXT_Y = 10                        # ... so the two lines centre on the QR
+TXT_PITCH = 10
+
 # ---- what a setting can be -------------------------------------------------
 # ENUM  a choice from a tuple of labels; the value is the index
 # NUM   an integer with a (lo, hi, step); the value is the number
 # BOOL  ON / OFF; the value is 0 or 1
 # INFO  read-only, `spec` is the text; a detent does nothing to it
 # PAGE  a submenu, `spec` is its rows; SELECT-click enters, MENU NAV backs out
-ENUM, NUM, BOOL, INFO, PAGE = 0, 1, 2, 3, 4
+# CARD  a page that is a PICTURE rather than a list.  `spec` is a builder
+#       f(font) -> NLIST*W bytes, called once at construction; entering and
+#       backing out work exactly as PAGE, and the two knobs that would move a
+#       cursor simply have nothing to move.
+ENUM, NUM, BOOL, INFO, PAGE, CARD = 0, 1, 2, 3, 4, 5
 
 
 def _angle_art(n=9, w=ART_W, h=ROW_P * 8 - 2, y0=1):
@@ -281,6 +302,48 @@ SHADE_ART = _shade_art()
 # Nothing here is saved.  A setting that makes the panel unreadable is one
 # power cycle from being undone, which is the right trade for a menu whose
 # whole job is finding out what a register does.
+def _text_at(buf, strip, w, x0, y, limit=W):
+    """One 8px text strip at an ARBITRARY y, which may straddle a page.
+
+    _build() never needs this because rows are page-aligned by construction;
+    a card is a free drawing, so it does.  Clipped at `limit` rather than
+    trusted: a short slice assignment resizes the bytearray on CPython and
+    raises IndexError on the device, which is the trap _check() exists for.
+    """
+    p = y >> 3
+    sh = y & 7
+    n = min(w, limit - x0)
+    for j in range(n):
+        v = strip[j] << sh
+        o = p * W + x0 + j
+        buf[o] |= v & 0xFF
+        if sh and p + 1 < NLIST:
+            buf[o + W] |= (v >> 8) & 0xFF
+
+
+def _github_card(font):
+    """The GITHUB page: the repo's QR beside the link it encodes.
+
+    Both, not either.  The code is the point on a panel with no keyboard, but a
+    QR is unreadable to a person -- if it will not scan, or you are reading the
+    panel in a photograph, the text is the only thing that tells you where it
+    went.
+    """
+    buf = bytearray(NLIST * W)
+    for y in range(qrdata.N):
+        row = qrdata.ROWS[y]
+        yy = QR_Y + y
+        o = (yy >> 3) * W + QR_X
+        b = 1 << (yy & 7)
+        for x in range(qrdata.N):
+            if (row >> x) & 1:
+                buf[o + x] |= b
+    for k in range(len(URL_LINES)):
+        w, sbuf = gfx.text_strip(font, URL_LINES[k], SPACING)
+        _text_at(buf, sbuf, w, TXT_X, TXT_Y + k * TXT_PITCH, W - PAD_R)
+    return bytes(buf)
+
+
 ADV = (('CONTRAST', NUM, 'contrast', (0, 63, 1), 25, None, None),
        ('RESISTOR RATIO', NUM, 'resistor', (0, 7, 1), 7, None, None),
        ('BIAS', ENUM, 'bias', ('1/9', '1/7'), 0, None, None),
@@ -300,7 +363,8 @@ DISP = (('DISPLAY VIEW ANGLE', ENUM, 'view_angle', ANGLES, VIEW_DEFAULT,
 SYS = (('METER RATE', ENUM, 'meter_rate', ('30', '60', '90'), 1, 'HZ', None),
        ('KNOB STEP', NUM, 'knob_step', (1, 10, 1), 4, None, None),
        ('HOLD TO MUTE', BOOL, 'hold_mute', None, 1, None, None),
-       ('MEDIA KEYS', BOOL, 'media_keys', None, 1, None, None))
+       ('MEDIA KEYS', BOOL, 'media_keys', None, 1, None, None),
+       ('GITHUB', CARD, 'github', _github_card, 0, None, None))
 
 OS = (('HOST LINK', INFO, 'link', 'USB CDC', 0, None, None),
       ('AUTO CONNECT', BOOL, 'autoconnect', None, 1, None, None),
@@ -360,6 +424,7 @@ class Config:
         self.vunit = []
         self.vstrip = []
         self.vmv = []
+        self.vcard = []           # a view is either a list of rows or a card
         for name, rows in tabs:
             self._add_view(rows, name)
         self.tab = tab                # which TAB is lit at the bottom
@@ -383,11 +448,17 @@ class Config:
                 self._build(v, i)
         self.render()
 
-    def _add_view(self, rows, title):
+    def _add_view(self, rows, title, card=None):
         """One list of rows, with everything it needs to be drawn and edited.
-        Recurses into PAGE rows, which is fine here -- it happens once, at
-        construction, and the tree is two deep."""
+        Recurses into PAGE and CARD rows, which is fine here -- it happens
+        once, at construction, and the tree is two deep.
+
+        A CARD's view has NO rows.  That is the whole of what makes it
+        different: everything that walks rows finds none, so the cursor, the
+        scrollbar and the value knob all have nothing to do without needing to
+        be told about cards individually."""
         v = len(self.vrows)
+        self.vcard.append(card)
         self.vrows.append(rows)
         self.vtitle.append(title)
         self.vvals.append([r[F_DFLT] for r in rows])
@@ -405,6 +476,9 @@ class Config:
         for i, r in enumerate(rows):
             if r[F_KIND] == PAGE:
                 self.vchild[v][i] = self._add_view(r[F_SPEC], r[F_NAME])
+            elif r[F_KIND] == CARD:
+                self.vchild[v][i] = self._add_view(
+                    (), r[F_NAME], r[F_SPEC](self.font))
         return v
 
     def _check(self):
@@ -471,9 +545,12 @@ class Config:
         return False
 
     def focused_key(self):
-        """The key of the row under the cursor.  What a caller acting on a
-        change asks, so it never has to know where a row sits."""
+        """The key of the row under the cursor, or None on a card, which has
+        no rows.  What a caller acting on a change asks, so it never has to
+        know where a row sits."""
         v = self.view
+        if not self.vrows[v]:
+            return None
         return self.vrows[v][self.vcur[v]][F_KEY]
 
     def _raw(self, v, i):
@@ -486,7 +563,7 @@ class Config:
             return bool(val)
         if k == INFO:
             return r[F_SPEC]
-        if k == PAGE:
+        if k == PAGE or k == CARD:
             return None
         return val
 
@@ -503,7 +580,7 @@ class Config:
             return '%d' % val
         if k == BOOL:
             return 'ON' if val else 'OFF'
-        if k == PAGE:
+        if k == PAGE or k == CARD:
             return ''
         return r[F_SPEC]
 
@@ -581,6 +658,8 @@ class Config:
     def animating(self):
         """Is the highlighted row one that moves?"""
         v = self.view
+        if not self.vrows[v]:
+            return False
         return _animated(self.vrows[v][self.vcur[v]][F_ART])
 
     def gray(self):
@@ -600,6 +679,8 @@ class Config:
         """ENC2: the cursor, and the window follows it."""
         v = self.view
         n = len(self.vrows[v])
+        if not n:                                # a card: nothing to move
+            return False
         c = self.vcur[v] + d
         c = 0 if c < 0 else (n - 1 if c >= n else c)
         if c == self.vcur[v]:
@@ -620,10 +701,12 @@ class Config:
         are labelled along the top, which is the affordance; a hidden edit mode
         is what makes people change settings they did not mean to."""
         v = self.view
+        if not self.vrows[v]:                    # a card: nothing to change
+            return False
         i = self.vcur[v]
         r = self.vrows[v][i]
         k = r[F_KIND]
-        if k == INFO or k == PAGE:
+        if k == INFO or k == PAGE or k == CARD:
             return False
         val = self.vvals[v][i]
         if k == ENUM:
@@ -647,9 +730,11 @@ class Config:
         or destructive that arrives later belongs here too, never on a detent:
         a detent is what an accidental brush of the panel delivers."""
         v = self.view
+        if not self.vrows[v]:                    # a card: MENU NAV is the exit
+            return False
         i = self.vcur[v]
         k = self.vrows[v][i][F_KIND]
-        if k == PAGE:
+        if k == PAGE or k == CARD:
             return self.enter()
         if k != BOOL:
             return False
@@ -685,7 +770,8 @@ class Config:
             for j in range(len(unit)):
                 if dx + j < edge:
                     strip[b + dx + j] = unit[j]
-        if r[F_KIND] == PAGE:                    # a disclosure mark, hard right
+        k = r[F_KIND]
+        if k == PAGE or k == CARD:               # a disclosure mark, hard right
             mw, mbuf = self._more
             for j in range(mw):
                 strip[b + edge - mw + j] = mbuf[j]
@@ -760,25 +846,33 @@ class Config:
         would be four times the work for three quarters of it wasted.
         """
         v = self.view
-        mv = self.vmv[v]
-        npage = len(self.vrows[v]) * ROW_P
         off = int(self.py + 0.5)
-        pg = off >> 3
-        sh = off & 7
         sc = self._scratch
-        for p in range(NLIST):
-            o = p * W
-            sp = pg + p
-            a = mv[sp] if 0 <= sp < npage else _ZERO
-            if sh == 0:
-                sc[o:o + W] = a          # settled: a byte-slice, as before
-            else:
-                b = mv[sp + 1] if 0 <= sp + 1 < npage else _ZERO
-                r = 8 - sh
-                for x in range(W):
-                    sc[o + x] = ((a[x] >> sh) | (b[x] << r)) & 0xFF
-        self._cursor(sc, off)
-        self._scrollbar(sc, npage, off)
+        card = self.vcard[v]
+        if card is not None:
+            # A card is already the whole window, composed once at
+            # construction, so this is one copy and none of the machinery
+            # below applies: there is no window to slide, no cursor to draw
+            # and nothing to scroll past.
+            sc[:] = card
+        else:
+            mv = self.vmv[v]
+            npage = len(self.vrows[v]) * ROW_P
+            pg = off >> 3
+            sh = off & 7
+            for p in range(NLIST):
+                o = p * W
+                sp = pg + p
+                a = mv[sp] if 0 <= sp < npage else _ZERO
+                if sh == 0:
+                    sc[o:o + W] = a      # settled: a byte-slice, as before
+                else:
+                    b = mv[sp + 1] if 0 <= sp + 1 < npage else _ZERO
+                    r = 8 - sh
+                    for x in range(W):
+                        sc[o + x] = ((a[x] >> sh) | (b[x] << r)) & 0xFF
+            self._cursor(sc, off)
+            self._scrollbar(sc, npage, off)
         o = (NLIST - 1) * W                       # the rule above the tabs
         for x in range(W):
             sc[o + x] |= RULE
