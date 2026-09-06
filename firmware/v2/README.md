@@ -207,10 +207,17 @@ been swept on the hardware; two of them (contrast 0, ALL PIXELS ON) black the
 panel out, and the way back is the knob you just turned, since the cursor does
 not move. BRIGHTNESS drives the real backlight.
 
-`DISPLAY VIEW ANGLE` is still a drawing with nothing behind it — it is waiting
-on which of the advanced registers should stand behind it. The remaining rows
-are placeholders in the right shape so the list, the scrolling and the tabs
-have something to be tested against.
+`DISPLAY VIEW ANGLE` **is the contrast register**, mapped: measured 25 looking
+down at the panel on a desk, 40 from an extremely shallow angle, interpolated
+over nine steps. The two rows agree in both directions — the friendly one
+writes the raw one, and turning the raw one moves the friendly one to whatever
+it now means. Panel default contrast is 25, top and bottom of that same range.
+
+`SHADING` cycles the grayscale modes from the bring-up experiment
+(`graybars.MODES`) with a staircase patch beside it, one step per level the
+mode renders. Nothing is wired to it yet. DIM AFTER and the SYS/OS rows remain
+placeholders in the right shape, so the list, the scrolling and the tabs have
+something to be tested against.
 
 ### One program is not one session
 

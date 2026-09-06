@@ -40,11 +40,15 @@ class ST7565:
     PAGES = 8
 
     def __init__(self, sck, mosi, a0, cs, rst,
-                 baudrate=8_000_000, orient_180=True, contrast=31,
+                 baudrate=8_000_000, orient_180=True, contrast=25,
                  col_offset=None):
         """Pins are board.GPx objects.  orient_180 flips the panel for the
-        naub case orientation.  contrast is the 0x81 register (0..63);
-        31 was tuned on the fitted panel for 4-plane FRC grays.
+        naub case orientation.  contrast is the 0x81 register (0..63); 25 is
+        the measured value for looking down at the panel on a desk, and the
+        top of a measured 25..40 range that runs from there to an extremely
+        shallow view (see CONFIG's DISPLAY VIEW ANGLE, which is that range).
+        The 4-plane FRC grays were originally tuned at 31, so a grayscale
+        screen may want its own value again.
 
         col_offset shifts the RAM window, and DEPENDS ON THE ORIENTATION.  The
         ST7565R has 132 columns of RAM but this panel wires only 128 of them,

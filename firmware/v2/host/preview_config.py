@@ -47,22 +47,31 @@ def shots():
         cfg.render()
         out.append((frc.avg_image([compose(cfg, mx)], SCALE), tag))
 
-    snap('DISP tab, cursor on the view angle (50 deg)')
-
-    for _ in range(4):
-        cfg.adjust(-1)
-    snap('SELECT turned down: 10 deg, the panel seen edge-on')
+    snap('DISP tab, cursor on the view angle: 90 deg = contrast 25')
 
     for _ in range(8):
+        cfg.adjust(-1)
+    snap('SELECT down to 10 deg -- edge-on, and contrast 40')
+
+    for _ in range(4):
         cfg.adjust(+1)
-    snap('SELECT turned up: 90 deg, square-on')
+    snap('50 deg, halfway')
 
     cfg.scroll(+1)
-    snap('SCROLL down: BRIGHTNESS, and the scrollbar moves')
-
     cfg.adjust(-6)
-    snap('SELECT on BRIGHTNESS: 70% -- live on the backlight')
+    snap('BRIGHTNESS 70% -- live on the backlight')
 
+    cfg.scroll(+1)
+    snap('SHADING, with a test patch of what each mode gets you')
+
+    for _ in range(3):
+        cfg.adjust(-1)
+    snap('SHADING 1F SPATIAL: two levels, and the patch says so')
+
+    cfg.adjust(+2)
+    snap('3F HYBRID: four levels')
+
+    cfg.adjust(+1)
     cfg.scroll(+2)
     snap('SCROLL to the end: the window follows the cursor')
 

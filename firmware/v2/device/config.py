@@ -142,6 +142,45 @@ def _angle_art(n=9, w=ART_W, h=ROW_P * 8 - 2, y0=1):
 ANGLE_ART = _angle_art()
 ANGLES = tuple('%d' % (10 * (i + 1)) for i in range(len(ANGLE_ART)))
 
+# DISPLAY VIEW ANGLE *is* a contrast curve, and nothing else.  MEASURED on the
+# fitted panel: 25 looking down at it on a desk, 40 from an extremely shallow
+# angle, so the nine steps are that range interpolated.  One number, one
+# register (0x81) -- the row exists because "the angle I look at it from" is a
+# question anyone can answer and "electronic volume" is not.
+VIEW_CONTRAST = tuple(int(40 + (25 - 40) * i / (len(ANGLES) - 1.0) + 0.5)
+                      for i in range(len(ANGLES)))
+VIEW_DEFAULT = len(ANGLES) - 1          # 90 deg -> contrast 25, the default
+
+def _shade_art(planes=(1, 2, 3, 4), w=ART_W, h=ROW_P * 8 - 2, y0=1):
+    """A staircase per shading mode: one step per level it can render.
+
+    A staircase and not a sample of the dither, deliberately.  What you are
+    choosing between is how many shades the mode buys, and at six pixels a step
+    an ordered dither at 20/40/60% is four fields of identical-looking noise --
+    tried it, it says nothing.  A staircase you can count says the one thing
+    the patch is for.  It cannot show the TEMPORAL half of a mode either; no
+    still frame can.
+    """
+    frames = []
+    for np in planes:
+        n = np + 1                       # levels, counting white and black
+        buf = bytearray(ROW_P * w)
+        for x in range(w):
+            step = x * n // w
+            if step != (x + 1) * n // w and x < w - 1:
+                continue                 # 1px gap, so the steps are countable
+            hh = int(h * (step + 1) / float(n) + 0.5)
+            for yy in range(y0 + h - hh, y0 + h):
+                buf[(yy >> 3) * w + x] |= 1 << (yy & 7)
+        frames.append(bytes(buf))
+    return tuple(frames)
+
+
+# The names are graybars.MODES, which is the experiment these came out of; the
+# plane count is what each one costs and how many levels it gets.
+SHADES = ('1F SPATIAL', '2F TEMPORAL', '3F HYBRID', '4F HYBRID')
+SHADE_ART = _shade_art()
+
 # ---- the settings ----------------------------------------------------------
 # ADVANCED DISPLAY is the ST7565R itself: exactly the registers the V2 bring-up
 # swept by hand to find a picture at all (bench/stage4_display.py) -- the
@@ -152,7 +191,7 @@ ANGLES = tuple('%d' % (10 * (i + 1)) for i in range(len(ANGLE_ART)))
 # Nothing here is saved.  A setting that makes the panel unreadable is one
 # power cycle from being undone, which is the right trade for a menu whose
 # whole job is finding out what a register does.
-ADV = (('CONTRAST', NUM, 'contrast', (0, 63, 1), 31, None, None),
+ADV = (('CONTRAST', NUM, 'contrast', (0, 63, 1), 25, None, None),
        ('RESISTOR RATIO', NUM, 'resistor', (0, 7, 1), 7, None, None),
        ('BIAS', ENUM, 'bias', ('1/9', '1/7'), 0, None, None),
        ('BOOSTER', ENUM, 'booster', ('4X', '5X', '6X'), 0, None, None),
@@ -160,8 +199,10 @@ ADV = (('CONTRAST', NUM, 'contrast', (0, 63, 1), 31, None, None),
        ('ALL PIXELS ON', BOOL, 'all_on', None, 0, None, None),
        ('START LINE', NUM, 'start_line', (0, 63, 1), 0, None, None))
 
-DISP = (('DISPLAY VIEW ANGLE', ENUM, 'view_angle', ANGLES, 4, DEG, ANGLE_ART),
+DISP = (('DISPLAY VIEW ANGLE', ENUM, 'view_angle', ANGLES, VIEW_DEFAULT,
+         DEG, ANGLE_ART),
         ('BRIGHTNESS', NUM, 'brightness', (0, 100, 5), 100, '%', None),
+        ('SHADING', ENUM, 'shading', SHADES, 3, None, SHADE_ART),
         ('DIM AFTER', ENUM, 'dim_after', ('30S', '1MIN', '5MIN', 'NEVER'),
          1, None, None),
         ('ADVANCED DISPLAY', PAGE, 'advanced', ADV, 0, None, None))
@@ -285,6 +326,43 @@ class Config:
                 if r[F_KEY] == key:
                     return self._raw(v, i)
         return None
+
+    def raw(self, key):
+        """The STORED value: an ENUM's index rather than its label.  What a
+        caller wants when the row is an index into something of its own."""
+        for v, rows in enumerate(self.vrows):
+            for i, r in enumerate(rows):
+                if r[F_KEY] == key:
+                    return self.vvals[v][i]
+        return None
+
+    def set(self, key, val):
+        """Write a value from outside -- one setting standing behind another,
+        which is how DISPLAY VIEW ANGLE and CONTRAST stay in agreement instead
+        of quietly disagreeing the moment you touch either.  Clamped to the
+        row's own range, so a caller cannot put a row somewhere the knob could
+        not.  -> True if it changed."""
+        for v, rows in enumerate(self.vrows):
+            for i, r in enumerate(rows):
+                if r[F_KEY] != key:
+                    continue
+                k = r[F_KIND]
+                if k == ENUM:
+                    n = len(r[F_SPEC])
+                    val = 0 if val < 0 else (n - 1 if val >= n else val)
+                elif k == NUM:
+                    lo, hi, _ = r[F_SPEC]
+                    val = lo if val < lo else (hi if val > hi else val)
+                elif k == BOOL:
+                    val = 1 if val else 0
+                else:
+                    return False
+                if val == self.vvals[v][i]:
+                    return False
+                self.vvals[v][i] = val
+                self._build(v, i)
+                return True
+        return False
 
     def focused_key(self):
         """The key of the row under the cursor.  What a caller acting on a

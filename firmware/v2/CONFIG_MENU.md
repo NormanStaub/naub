@@ -164,6 +164,13 @@ computed.
 perspective projection changes by well under a pixel per step at this size. A
 flipbook whose frames are identical is not a flipbook.
 
+**Say the one thing the patch is for.** `SHADING`'s art is a staircase, one
+step per level the mode can render, and deliberately *not* a sample of the
+dither: at six pixels a step, ordered dither at 20/40/60% is four fields of
+identical-looking noise — I tried it, and it says nothing. A staircase you can
+count says the thing you are choosing between. It cannot show the *temporal*
+half of a mode either; no still frame can.
+
 ## Units
 
 `unit` is drawn after the value and is not part of the formatted text, because
@@ -183,16 +190,22 @@ the only one so far; add others beside it.
 ## 4. Reading a value, and wiring it to something
 
 ```python
-cfg.value('view_angle')     # -> '50'   the ENUM's LABEL, not a number
+cfg.value('view_angle')     # -> '90'   the ENUM's LABEL, not a number
 cfg.value('brightness')     # -> 100    a NUM is an int
 cfg.value('invert')         # -> False  a BOOL is a bool
 cfg.value('firmware')       # -> 'V2-MIXER'
+cfg.raw('view_angle')       # -> 8      the ENUM's INDEX, for indexing with
+cfg.set('contrast', 25)     # -> True   write one from outside, clamped
 ```
 
-Note the first one: an `ENUM` gives you its **label string**. Wrap it where you
-use it (`int(cfg.value('view_angle'))`) or store the real value in the labels
-and parse once — do not add a parallel table of "real" values, which is a
-second thing to keep in step.
+Note the first one: an `ENUM` gives you its **label string**. Use `raw()` when
+what you want is the index — typically to index a table of your own, which is
+exactly what the view angle does.
+
+`set()` is for **one setting standing behind another**. It clamps to the row's
+own range, so a caller cannot put a row somewhere the knob could not, and it
+rebuilds that row's strip. Use it to keep two rows in agreement rather than
+letting them describe the panel differently.
 
 Wiring one up happens in `demo_mixer.py`, where the detent is handled, never
 inside `config.py`. There is one function for it and it is the only place that
@@ -200,8 +213,15 @@ knows about both a setting and a register:
 
 ```python
 def apply_display(key):
+    if key == 'view_angle':                       # a curve over another row
+        c = config.VIEW_CONTRAST[cfg.raw('view_angle')]
+        cfg.set('contrast', c)
+        disp.set_contrast(c)
+        return True
     if key == 'contrast':
-        disp.set_contrast(cfg.value('contrast'))
+        c = cfg.value('contrast')
+        disp.set_contrast(c)
+        cfg.set('view_angle', nearest_angle(c))   # ... and back the other way
     elif key == 'bias':
         disp.cmd(BIAS_CMD[cfg.value('bias')])
     elif key == 'brightness':
@@ -250,6 +270,23 @@ bring-up swept by hand to get a picture at all (`bench/stage4_display.py`):
 They are **live**: turning the knob writes the register, because a calibration
 control you have to reflash to try is not one. Every value of every one of them
 has been swept on the hardware and the panel survives all of them.
+
+**`DISPLAY VIEW ANGLE` is `CONTRAST`**, and nothing else. Measured on the
+fitted panel: **25** looking down at it on a desk, **40** from an extremely
+shallow angle, so the nine steps interpolate that range:
+
+| 10° | 20° | 30° | 40° | 50° | 60° | 70° | 80° | 90° |
+|---|---|---|---|---|---|---|---|---|
+| 40 | 38 | 36 | 34 | 33 | 31 | 29 | 27 | 25 |
+
+The two rows are kept in agreement **both ways**: setting the angle writes the
+contrast row, and turning the raw contrast moves the angle row to whatever it
+now means (nearest step; ties go to the shallower one). Two controls over one
+register that disagreed about its value would be worse than one control.
+
+That is the pattern for any friendly-name-over-raw-value pair — `raw()` to read
+the index, `set()` to write the other row, and both directions handled, or the
+one you forgot becomes the bug report.
 
 Two can black the panel out — contrast 0, and ALL PIXELS ON. The cursor does
 not move when they do, so the way back is the knob you just turned; a power

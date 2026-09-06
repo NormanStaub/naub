@@ -289,14 +289,40 @@ def set_screen(v):
     i = 0
 
 
+def nearest_angle(c):
+    """Which view-angle step a raw contrast corresponds to."""
+    best = bd = 0
+    for i, v in enumerate(config.VIEW_CONTRAST):
+        d = v - c if v > c else c - v
+        if i == 0 or d < bd:
+            bd, best = d, i
+    return best
+
+
 def apply_display(key):
     """Push one CONFIG value at the hardware.
 
     config.py draws settings and knows nothing about registers or backlights;
     this is the only place that knows both, which is what keeps that module
     importable by the PC preview with no hardware anywhere near it."""
+    if key == 'view_angle':
+        # The friendly row IS the contrast register, mapped: 25 looking down
+        # at the panel, 40 from an extremely shallow angle, measured.  It
+        # writes CONTRAST as well as the hardware, so the advanced row never
+        # sits there claiming a value that is no longer in the chip.
+        c = config.VIEW_CONTRAST[cfg.raw('view_angle')]
+        cfg.set('contrast', c)
+        disp.set_contrast(c)
+        print("display view_angle -> %s deg, contrast %d"
+              % (cfg.value('view_angle'), c))
+        return True
     if key == 'contrast':
-        disp.set_contrast(cfg.value('contrast'))
+        c = cfg.value('contrast')
+        disp.set_contrast(c)
+        # ... and the same agreement in the other direction: turning the raw
+        # register by hand moves the friendly row to whatever it now means,
+        # rather than leaving two rows describing the panel differently.
+        cfg.set('view_angle', nearest_angle(c))
     elif key == 'resistor':
         disp.cmd(0x20 | (cfg.value('resistor') & 0x07))
     elif key == 'bias':

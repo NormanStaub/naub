@@ -39,7 +39,7 @@ BL_PWM = board.GP13
 ENCODER_DIVISOR = 2        # PEC11L 30-detent/15-PPR: one count per detent
 
 
-def display(baudrate=8_000_000, contrast=31, orient_180=True):
+def display(baudrate=8_000_000, contrast=25, orient_180=True):
     return ST7565(LCD_SCK, LCD_MOSI, LCD_A0, LCD_CS, LCD_RST,
                   baudrate=baudrate, orient_180=orient_180, contrast=contrast)
 
