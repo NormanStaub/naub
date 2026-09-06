@@ -19,15 +19,19 @@ more; everything else works off the tuple.  Tuples rather than objects because
 this runs on CircuitPython, where every instance carries a dict, and because
 the same module is imported on the PC for pixel-exact previews.
 
-    (name, kind, key, spec, default, art)
+    (name, kind, key, spec, default, unit, art)
 
-`spec` is whatever the kind needs: ENUM a tuple of labels, PCT a (lo, hi, step)
+`spec` is whatever the kind needs: ENUM a tuple of labels, NUM a (lo, hi, step)
 triple, BOOL nothing, INFO the string to show.  `key` is a string from the
 start, so a value can be found by name rather than by position -- the order of
 these rows WILL change, and the day one of them is wired to the host or saved
-to disk, position is the wrong handle.  `art` is None or a tuple of little
-16px-tall pictures indexed BY THE VALUE, which is the whole of the view-angle
-flipbook: no logic, just `art[val]`.
+to disk, position is the wrong handle.  `unit` is drawn after the value: a
+string, or a hand-drawn strip of column bytes for the ones ccfont has no glyph
+for (DEG is the only one so far).  `art` is None or a tuple of little 16px-tall
+pictures indexed BY THE VALUE, which is the whole of the view-angle flipbook:
+no logic, just `art[val]`.
+
+See CONFIG_MENU.md for how to add to any of this.
 
 **Rows are 16 px, which is two pages.**  The name on the top line, the marker
 and value on the bottom, a picture spanning both on the right -- and, because
@@ -83,7 +87,11 @@ DEG = (0x02, 0x05, 0x02)          # ccfont has no degree glyph; this is one
 HEAD = ('MENU NAV', 'SCROLL', 'SELECT')
 
 # ---- what a setting can be -------------------------------------------------
-ENUM, PCT, BOOL, INFO = 0, 1, 2, 3
+# ENUM  a choice from a tuple of labels; the value is the index
+# NUM   an integer with a (lo, hi, step); the value is the number
+# BOOL  ON / OFF; the value is 0 or 1
+# INFO  read-only, `spec` is the text; a detent does nothing to it
+ENUM, NUM, BOOL, INFO = 0, 1, 2, 3
 
 
 def _angle_art(n=9, w=ART_W, h=ROW_P * 8 - 2, y0=1):
@@ -128,24 +136,43 @@ ANGLES = tuple('%d' % (10 * (i + 1)) for i in range(len(ANGLE_ART)))
 # name, kind, key, spec, default, art.  Only DISPLAY VIEW ANGLE is real; the
 # rest are placeholders standing in the right shape so the list, the scrolling
 # and the tabs have something to be tested against.
-DISP = (('DISPLAY VIEW ANGLE', ENUM, 'view_angle', ANGLES, 4, ANGLE_ART),
-        ('BRIGHTNESS', PCT, 'brightness', (0, 100, 5), 100, None),
+DISP = (('DISPLAY VIEW ANGLE', ENUM, 'view_angle', ANGLES, 4, DEG, ANGLE_ART),
+        ('BRIGHTNESS', NUM, 'brightness', (0, 100, 5), 100, '%', None),
         ('DIM AFTER', ENUM, 'dim_after', ('30S', '1MIN', '5MIN', 'NEVER'),
-         1, None),
-        ('INVERT', BOOL, 'invert', None, 0, None))
+         1, None, None),
+        ('INVERT', BOOL, 'invert', None, 0, None, None))
 
-SYS = (('METER RATE', ENUM, 'meter_rate', ('30HZ', '60HZ', '90HZ'), 1, None),
-       ('KNOB STEP', PCT, 'knob_step', (1, 10, 1), 4, None),
-       ('HOLD TO MUTE', BOOL, 'hold_mute', None, 1, None),
-       ('MEDIA KEYS', BOOL, 'media_keys', None, 1, None))
+SYS = (('METER RATE', ENUM, 'meter_rate', ('30', '60', '90'), 1, 'HZ', None),
+       ('KNOB STEP', NUM, 'knob_step', (1, 10, 1), 4, None, None),
+       ('HOLD TO MUTE', BOOL, 'hold_mute', None, 1, None, None),
+       ('MEDIA KEYS', BOOL, 'media_keys', None, 1, None, None))
 
-OS = (('HOST LINK', INFO, 'link', 'USB CDC', 0, None),
-      ('AUTO CONNECT', BOOL, 'autoconnect', None, 1, None),
-      ('KEEP COLUMNS', BOOL, 'keep_columns', None, 1, None),
-      ('FIRMWARE', INFO, 'firmware', 'V2-MIXER', 0, None))
+OS = (('HOST LINK', INFO, 'link', 'USB CDC', 0, None, None),
+      ('AUTO CONNECT', BOOL, 'autoconnect', None, 1, None, None),
+      ('KEEP COLUMNS', BOOL, 'keep_columns', None, 1, None, None),
+      ('FIRMWARE', INFO, 'firmware', 'V2-MIXER', 0, None, None))
 
 TABS = (('OS', OS), ('SYS', SYS), ('DISP', DISP))
 START_TAB = 2                     # DISP: where the one real setting lives
+
+# fields of a setting tuple, named so nothing reads r[5] and hopes
+F_NAME, F_KIND, F_KEY, F_SPEC, F_DFLT, F_UNIT, F_ART = 0, 1, 2, 3, 4, 5, 6
+
+
+def _unit_strip(font, unit):
+    """A unit as column bytes.  Strings go through the font; a tuple is taken
+    as already drawn, which is how a degree sign exists at all -- ccfont is
+    ASCII and has no glyph for one."""
+    if not unit:
+        return None
+    if isinstance(unit, str):
+        return gfx.text_strip(font, unit, SPACING)[1]
+    return unit
+
+
+def _edge(r):
+    """Where a row's text has to stop: short of the picture if it has one."""
+    return ART_X - 2 if r[F_ART] else W - PAD_R
 
 
 class Config:
@@ -161,8 +188,10 @@ class Config:
         # where you left it, not reset to the top
         self.cur = [0] * len(tabs)
         self.top = [0] * len(tabs)
-        self.vals = [[r[4] for r in rows] for rows in self.rows]
-        self._nstrip = [[gfx.text_strip(font, r[0], SPACING) for r in rows]
+        self.vals = [[r[F_DFLT] for r in rows] for rows in self.rows]
+        self._unit = [[_unit_strip(font, r[F_UNIT]) for r in rows]
+                      for rows in self.rows]
+        self._nstrip = [[gfx.text_strip(font, r[F_NAME], SPACING) for r in rows]
                         for rows in self.rows]
         self._vstrip = [[None] * len(rows) for rows in self.rows]
         self._strip = [bytearray(len(rows) * ROW_P * W) for rows in self.rows]
@@ -185,11 +214,11 @@ class Config:
         catch it at construction, where the message can say which name."""
         for t, rows in enumerate(self.rows):
             for i, r in enumerate(rows):
-                avail = (ART_X if r[5] else W - PAD_R) - NAME_X
-                w = self._nstrip[t][i][0]
+                avail = _edge(r) - NAME_X          # the same edge _build uses,
+                w = self._nstrip[t][i][0]          # or the check is a lie
                 if w > avail:
                     raise ValueError('%s: name is %dpx, field is %d'
-                                     % (r[0], w, avail))
+                                     % (r[F_NAME], w, avail))
         for i, (w, _) in enumerate(self._hstrip):
             if w > COLW - 2:
                 raise ValueError('%s: header cell is %d' % (HEAD[i], COLW - 2))
@@ -200,33 +229,41 @@ class Config:
         drawing for now -- but this is the handle the wiring will use."""
         for t, rows in enumerate(self.rows):
             for i, r in enumerate(rows):
-                if r[2] == key:
+                if r[F_KEY] == key:
                     return self._raw(t, i)
         return None
+
+    def focused_key(self):
+        """The key of the row under the cursor.  What a caller acting on a
+        change asks, so it never has to know where a row sits."""
+        return self.rows[self.tab][self.cur[self.tab]][F_KEY]
 
     def _raw(self, t, i):
         r = self.rows[t][i]
         v = self.vals[t][i]
-        if r[1] == ENUM:
-            return r[3][v]
-        if r[1] == BOOL:
+        k = r[F_KIND]
+        if k == ENUM:
+            return r[F_SPEC][v]
+        if k == BOOL:
             return bool(v)
-        if r[1] == INFO:
-            return r[3]
+        if k == INFO:
+            return r[F_SPEC]
         return v
 
     def _fmt(self, t, i):
-        """The only place that knows what a kind looks like."""
+        """The only place that knows what a kind looks like.  The unit is not
+        part of it: that is drawn separately, because some of them are not
+        text."""
         r = self.rows[t][i]
-        k = r[1]
+        k = r[F_KIND]
         v = self.vals[t][i]
         if k == ENUM:
-            return r[3][v]
-        if k == PCT:
-            return '%d%%' % v
+            return r[F_SPEC][v]
+        if k == NUM:
+            return '%d' % v
         if k == BOOL:
             return 'ON' if v else 'OFF'
-        return r[3]
+        return r[F_SPEC]
 
     # ---- input -----------------------------------------------------------
     def nav(self, d):
@@ -264,15 +301,16 @@ class Config:
         t = self.tab
         i = self.cur[t]
         r = self.rows[t][i]
-        k = r[1]
+        k = r[F_KIND]
         if k == INFO:
             return False
         v = self.vals[t][i]
         if k == ENUM:
+            n = len(r[F_SPEC])
             nv = v + d
-            nv = 0 if nv < 0 else (len(r[3]) - 1 if nv >= len(r[3]) else nv)
-        elif k == PCT:
-            lo, hi, step = r[3]
+            nv = 0 if nv < 0 else (n - 1 if nv >= n else nv)
+        elif k == NUM:
+            lo, hi, step = r[F_SPEC]
             nv = v + d * step
             nv = lo if nv < lo else (hi if nv > hi else nv)
         else:
@@ -289,7 +327,7 @@ class Config:
         accidental brush of the panel delivers."""
         t = self.tab
         i = self.cur[t]
-        if self.rows[t][i][1] != BOOL:
+        if self.rows[t][i][F_KIND] != BOOL:
             return False
         self.vals[t][i] = 0 if self.vals[t][i] else 1
         self._build(t, i)
@@ -302,8 +340,8 @@ class Config:
         o = i * ROW_P * W
         for p in range(ROW_P):                   # clear the row
             strip[o + p * W:o + (p + 1) * W] = _ZERO
-        art = r[5]
-        edge = ART_X - 2 if art else W - PAD_R
+        art = r[F_ART]
+        edge = _edge(r)
 
         nw, nbuf = self._nstrip[t][i]            # the name, top line
         for j in range(min(nw, edge - NAME_X)):
@@ -315,14 +353,14 @@ class Config:
         txt = self._fmt(t, i)
         self._vstrip[t][i] = gfx.text_strip(self.font, txt, SPACING)
         vw, vbuf = self._vstrip[t][i]
-        deg = r[5] is ANGLE_ART                  # the view angle reads "45 deg"
         for j in range(min(vw, edge - VAL_X)):
             strip[b + VAL_X + j] = vbuf[j]
-        if deg:
+        unit = self._unit[t][i]
+        if unit:
             dx = VAL_X + vw + 1
-            for j in range(len(DEG)):
+            for j in range(len(unit)):
                 if dx + j < edge:
-                    strip[b + dx + j] = DEG[j]
+                    strip[b + dx + j] = unit[j]
         if art:
             frame = art[self.vals[t][i]]
             for p in range(ROW_P):

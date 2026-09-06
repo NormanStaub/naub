@@ -163,6 +163,8 @@ sliding in.
 
 ### The CONFIG screen
 
+**Adding settings: see [CONFIG_MENU.md](CONFIG_MENU.md).**
+
 The fourth mode. Three knobs, three jobs, labelled across the top of the screen
 because that is the affordance: **ENC1 the tabs, ENC2 the cursor, ENC3 the
 focused value** — turned live, with no arming and no commit step. A hidden edit
