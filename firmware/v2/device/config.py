@@ -148,8 +148,23 @@ def _angle_art(n=9, w=ART_W, h=ROW_P * 8 - 2, y0=1):
     return tuple(frames)
 
 
-# 4x4 ordered dither, for putting a gradient on a panel with two colours
+# 4x4 ordered dither, for putting a gradient on a panel with two colours.
+# Flat, and indexed [(y & 3) * 4 + (x & 3)] -- host/frc.py's nested rows.
 BAYER = (0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5)
+
+# This screen runs FRC, so the SHADING patch can show what the app switcher's
+# icons actually look like rather than an impression of them.  Everything else
+# on it is identical across the four planes; only the patch differs, which is
+# why draw_list composes the list ONCE and copies it out.
+NPLANE = 4
+
+# Modes whose frame count divides the 4-plane cycle, so each is shown exactly.
+# graybars.MODES also has 3-frame variants; a 3-frame pattern inside a 4-frame
+# loop repeats one of its frames, which is a different duty and therefore a
+# different grey -- a patch that lied about the one thing it is for.
+SHADE_PLANES = (1, 2, 4)
+SHADE_PHASES = 16                 # of the wave; ~0.9 s to come round
+PHASE_MS = 55
 
 
 ANGLE_ART = _angle_art()
@@ -164,55 +179,96 @@ VIEW_CONTRAST = tuple(int(40 + (25 - 40) * i / (len(ANGLES) - 1.0) + 0.5)
                       for i in range(len(ANGLES)))
 VIEW_DEFAULT = len(ANGLES) - 1          # 90 deg -> contrast 25, the default
 
-def _shade_art(planes=(1, 2, 3, 4), w=ART_W, h=ROW_P * 8 - 2, y0=1,
-               amp=2, waves=1.5):
-    """A little waving flag per shading mode: a black-to-white ramp, dithered,
-    inside a band displaced by a sine so it reads as cloth rather than a swatch.
+def _cloth(np, w, band, y0, amp):
+    """One shading mode's gradient, as `np` bitplanes of column bits.
 
-    The ramp is quantised to that mode's level count, which is what differs
-    between the four -- two levels give a hard edge across the middle, five
-    give something that passes for a gradient at 30 pixels wide.
+    This is `host/frc.py` encode(), transcribed: integer duty, a 4x4 Bayer
+    ordered dither on the fractional residual, and the phase rotated by
+    (x+y)%n so neighbouring pixels fire on different frames.  Transcribed
+    rather than approximated because the whole point of the patch is that it
+    shows what the app switcher's icons will look like, and the icons are that
+    function's output.
 
-    The band is OUTLINED, and the outline is joined column to column.  Without
-    the outline the flag dissolves wherever the ramp goes light, so it reads as
-    a blob fading out rather than a shape; without the joining it is a dotted
-    trail wherever the sine steps more than a pixel between columns.
+    -> plane -> per-column 16-bit ints, the band sitting at its rest position
+    with `amp` rows of headroom above and below for the wave to move into.
     """
-    frames = []
-    for np in planes:
-        n = np + 1                       # levels, counting white and black
-        band = h - 2 * amp
-        buf = bytearray(ROW_P * w)
-
-        def ink(x, y):
-            buf[(y >> 3) * w + x] |= 1 << (y & 7)
-
-        prev = None
+    out = []
+    top = y0 + amp
+    for k in range(np):
+        col = []
         for x in range(w):
-            shade = 1.0 - x / (w - 1.0)                    # black on the left
-            q = int(shade * (n - 1) + 0.5) / (n - 1.0)
-            # floor(v + 0.5), not int(v + 0.5): int() truncates toward zero,
-            # so the trough of the wave rounds the wrong way
-            dy = int(math.floor(
-                amp * math.sin(2.0 * math.pi * waves * x / (w - 1.0)) + 0.5))
-            top = y0 + amp + dy
-            thr = q * 16.0
-            for yy in range(top, top + band):
-                if BAYER[(yy & 3) * 4 + (x & 3)] < thr:
-                    ink(x, yy)
-            lo = top if prev is None else (top if top < prev else prev)
-            hi = top if prev is None else (prev if top < prev else top)
-            for yy in range(lo, hi + 1):
-                ink(x, yy)
-                ink(x, yy + band - 1)
-            prev = top
-        frames.append(bytes(buf))
-    return tuple(frames)
+            g = 1.0 - x / (w - 1.0)                  # ink: black on the left
+            d = g * np
+            base = int(d)
+            v = 0
+            for y in range(top, top + band):
+                b = base
+                if (BAYER[(y & 3) * 4 + (x & 3)] + 0.5) / 16.0 < d - base:
+                    b += 1
+                if (k - (x + y)) % np < b:
+                    v |= 1 << y
+            col.append(v)
+        out.append(col)
+    return out
 
 
-# The names are graybars.MODES, which is the experiment these came out of; the
-# plane count is what each one costs and how many levels it gets.
-SHADES = ('1F SPATIAL', '2F TEMPORAL', '3F HYBRID', '4F HYBRID')
+def _shade_art(modes=SHADE_PLANES, nphase=SHADE_PHASES, nplane=NPLANE,
+               w=ART_W, h=ROW_P * 8 - 2, y0=1, amp=2, waves=1.5):
+    """A little waving flag per shading mode: the gradient above, inside a band
+    displaced by a sine, at `nphase` phases of the wave.
+
+    -> mode -> phase -> plane -> a ROW_P*ART_W frame.
+
+    The wave is a per-column vertical SHIFT of the cloth, which is both what a
+    flag does and what makes this cheap: the dither is encoded once per mode
+    and every phase after that is thirty shifts, so the whole animation builds
+    at import in milliseconds instead of re-dithering 30x14 pixels a frame.
+
+    The band is OUTLINED, and the outline joined column to column.  Without the
+    outline the flag dissolves wherever the ramp goes light and reads as a blob
+    fading out rather than a shape; without the joining it is a dotted trail
+    wherever the sine steps more than a pixel between columns.
+    """
+    band = h - 2 * amp
+    out = []
+    for np in modes:
+        tex = _cloth(np, w, band, y0, amp)
+        phases = []
+        for ph in range(nphase):
+            # the wave, and the outline that rides on it -- computed once and
+            # shared by every plane, because the edge is solid black
+            dys = []
+            edge = []
+            prev = None
+            for x in range(w):
+                t = 2.0 * math.pi * (waves * x / (w - 1.0) + ph / float(nphase))
+                dy = int(math.floor(amp * math.sin(t) + 0.5))
+                top = y0 + amp + dy
+                lo = top if prev is None else (top if top < prev else prev)
+                hi = top if prev is None else (prev if top < prev else top)
+                m = 0
+                for yy in range(lo, hi + 1):
+                    m |= (1 << yy) | (1 << (yy + band - 1))
+                dys.append(dy)
+                edge.append(m)
+                prev = top
+            planes = []
+            for k in range(nplane):
+                src = tex[k % np]
+                buf = bytearray(ROW_P * w)
+                for x in range(w):
+                    dy = dys[x]
+                    v = (src[x] << dy) if dy >= 0 else (src[x] >> -dy)
+                    v = (v | edge[x]) & 0xFFFF
+                    buf[x] = v & 0xFF
+                    buf[w + x] = (v >> 8) & 0xFF
+                planes.append(bytes(buf))
+            phases.append(tuple(planes))
+        out.append(tuple(phases))
+    return tuple(out)
+
+
+SHADES = ('1F SPATIAL', '2F TEMPORAL', '4F HYBRID')
 SHADE_ART = _shade_art()
 
 # ---- the settings ----------------------------------------------------------
@@ -236,7 +292,7 @@ ADV = (('CONTRAST', NUM, 'contrast', (0, 63, 1), 25, None, None),
 DISP = (('DISPLAY VIEW ANGLE', ENUM, 'view_angle', ANGLES, VIEW_DEFAULT,
          DEG, ANGLE_ART),
         ('BRIGHTNESS', NUM, 'brightness', (0, 100, 5), 100, '%', None),
-        ('SHADING', ENUM, 'shading', SHADES, 3, None, SHADE_ART),
+        ('SHADING', ENUM, 'shading', SHADES, 2, None, SHADE_ART),
         ('DIM AFTER', ENUM, 'dim_after', ('30S', '1MIN', '5MIN', 'NEVER'),
          1, None, None),
         ('ADVANCED DISPLAY', PAGE, 'advanced', ADV, 0, None, None))
@@ -274,8 +330,17 @@ def _edge(r):
     return ART_X - 2 if r[F_ART] else W - PAD_R
 
 
+def _animated(art):
+    """Is this row's art a per-plane animation rather than one still?
+
+    Told apart by shape: a still is `art[value] -> bytes`, an animation is
+    `art[value][phase][plane] -> bytes`.  One test, in one place, rather than a
+    seventh field in every row tuple that only one row would ever use."""
+    return art is not None and not isinstance(art[0], (bytes, bytearray))
+
+
 class Config:
-    def __init__(self, font, tabs=TABS, n=1, tab=START_TAB):
+    def __init__(self, font, tabs=TABS, n=NPLANE, tab=START_TAB):
         self.font = font
         self.planes = [gfx.new() for _ in range(n)]
         self._ink = tuple(range(n))
@@ -302,6 +367,11 @@ class Config:
         self.stack = []               # how we got here, for backing out
         self.py = 0.0                 # where the window IS, in pixels
         self.pt = 0.0                 # ... and where it is going
+        self.phase = 0                # of the shading flag's wave
+        self._t_phase = 0
+        self._scratch = bytearray(NLIST * W)   # the list, composed once
+        self._smv = tuple(memoryview(self._scratch)[p * W:(p + 1) * W]
+                          for p in range(NLIST))
         self._hstrip = tuple(gfx.text_strip(font, h, SPACING) for h in HEAD)
         self._tstrip = tuple(gfx.text_strip(font, t[0], SPACING) for t in tabs)
         self._more = gfx.text_strip(font, '>', SPACING)
@@ -477,7 +547,7 @@ class Config:
         slide between two different lists is motion that means nothing."""
         self.pt = self.py = float(self.vtop[self.view] * ROW_H)
 
-    def step(self):
+    def step(self, now=0):
         """Ease the window toward the row the cursor is on.  -> True while it
         is still moving, which is what tells the caller to keep redrawing.
 
@@ -491,13 +561,39 @@ class Config:
         entry lookup tables (6.5 vs 6.8 ms -- 5%, for 4 kB of tables), zip over
         two memoryviews (11.0) and bytes() over a generator (11.4); the obvious
         loop wins."""
+        moved = False
         d = self.pt - self.py
         if d > SCROLL_SNAP or d < -SCROLL_SNAP:
             self.py += d * SCROLL_EASE
-            return True
-        if self.py != self.pt:
+            moved = True
+        elif self.py != self.pt:
             self.py = self.pt
-            return True
+            moved = True
+        # the flag waves only while its row is the one you are looking at:
+        # an animation nobody has asked to see is a redraw per tick for ever
+        if now and self.animating():
+            if now - self._t_phase >= PHASE_MS * 1000000:
+                self._t_phase = now
+                self.phase += 1
+                moved = True
+        return moved
+
+    def animating(self):
+        """Is the highlighted row one that moves?"""
+        v = self.view
+        return _animated(self.vrows[v][self.vcur[v]][F_ART])
+
+    def gray(self):
+        """Is anything on screen actually using the four planes?  When nothing
+        is, the caller can push one plane instead of four."""
+        v = self.view
+        off = int(self.py + 0.5)
+        for i in range(len(self.vrows[v])):
+            if not _animated(self.vrows[v][i][F_ART]):
+                continue
+            wy = i * ROW_H - off
+            if -ROW_H < wy < NLIST * 8:
+                return True
         return False
 
     def scroll(self, d):
@@ -593,7 +689,10 @@ class Config:
             mw, mbuf = self._more
             for j in range(mw):
                 strip[b + edge - mw + j] = mbuf[j]
-        if art:
+        if art and not _animated(art):
+            # A still goes into the strip like everything else.  An animation
+            # cannot: it differs per plane and per frame, so it is composited
+            # at draw time instead -- see _overlay().
             frame = art[self.vvals[v][i]]
             for p in range(ROW_P):
                 so = o + p * W + ART_X
@@ -652,30 +751,101 @@ class Config:
                 fb[o + x] |= RULE
 
     def draw_list(self):
+        """Compose the list ONCE, then copy it to every plane.
+
+        The window, the cursor, the scrollbar and the rule are identical on all
+        four planes -- only the shading patch differs -- so the expensive part,
+        which is the bit-shifted blit while the list is sliding, happens once
+        and each plane is five byte-slices.  Doing the whole thing per plane
+        would be four times the work for three quarters of it wasted.
+        """
         v = self.view
         mv = self.vmv[v]
         npage = len(self.vrows[v]) * ROW_P
         off = int(self.py + 0.5)
         pg = off >> 3
         sh = off & 7
+        sc = self._scratch
+        for p in range(NLIST):
+            o = p * W
+            sp = pg + p
+            a = mv[sp] if 0 <= sp < npage else _ZERO
+            if sh == 0:
+                sc[o:o + W] = a          # settled: a byte-slice, as before
+            else:
+                b = mv[sp + 1] if 0 <= sp + 1 < npage else _ZERO
+                r = 8 - sh
+                for x in range(W):
+                    sc[o + x] = ((a[x] >> sh) | (b[x] << r)) & 0xFF
+        self._cursor(sc, off)
+        self._scrollbar(sc, npage, off)
+        o = (NLIST - 1) * W                       # the rule above the tabs
+        for x in range(W):
+            sc[o + x] |= RULE
+        smv = self._smv
         for k in self._ink:
             fb = self.planes[k]
             for p in range(NLIST):
                 o = (LIST_P0 + p) * W
-                sp = pg + p
-                a = mv[sp] if 0 <= sp < npage else _ZERO
-                if sh == 0:
-                    fb[o:o + W] = a          # settled: a byte-slice, as before
-                else:
-                    b = mv[sp + 1] if 0 <= sp + 1 < npage else _ZERO
-                    r = 8 - sh
-                    for x in range(W):
-                        fb[o + x] = ((a[x] >> sh) | (b[x] << r)) & 0xFF
-            self._cursor(fb, off)
-            self._scrollbar(fb, npage, off)
-            o = LIST_P1 * W                       # the rule above the tabs
-            for x in range(W):
-                fb[o + x] |= RULE
+                fb[o:o + W] = smv[p]
+        self._overlay(off)
+
+    def _overlay(self, off):
+        """Composite any animated art over the copied list, per plane.  This is
+        the only thing on the screen that differs between the four."""
+        v = self.view
+        rows = self.vrows[v]
+        for i in range(len(rows)):
+            art = rows[i][F_ART]
+            if not _animated(art):
+                continue
+            wy = i * ROW_H - off
+            if wy <= -ROW_H or wy >= NLIST * 8:
+                continue                          # not on screen
+            frames = art[self.vvals[v][i]]
+            fs = frames[self.phase % len(frames)]
+            n = len(fs)
+            for k in self._ink:
+                self._art(self.planes[k], fs[k % n], wy)
+
+    def _art(self, fb, frame, wy):
+        """One 30x16 patch at an arbitrary window row, a column at a time.
+
+        Shifted by the BIT part of the offset only, never the whole row
+        position: a 16-bit value shifted up 40 bits is a 56-bit integer, which
+        on MicroPython leaves the small-int path for the heap.  Shifting by at
+        most 7 keeps every value inside 23 bits.
+
+        The three destination pages are the same for every column, so their
+        base indices are computed once, out here.  Doing that arithmetic inside
+        the loop -- (LIST_P0 + p) * W + ART_X + x, thirty times, three deep,
+        four planes over -- measured 4.9 ms a redraw against this one's 2.2.
+        """
+        p0 = wy >> 3                    # floors for negatives, which is right
+        sh = wy & 7                     # ... and this is then always positive
+        o0 = o1 = o2 = -1
+        if 0 <= p0 < NLIST:
+            o0 = (LIST_P0 + p0) * W + ART_X
+        if 0 <= p0 + 1 < NLIST:
+            o1 = (LIST_P0 + p0 + 1) * W + ART_X
+        if 0 <= p0 + 2 < NLIST:
+            o2 = (LIST_P0 + p0 + 2) * W + ART_X
+        for x in range(ART_W):
+            v = (frame[x] | (frame[ART_W + x] << 8)) << sh
+            if not v:
+                continue
+            if o0 >= 0:
+                b = v & 0xFF
+                if b:
+                    fb[o0 + x] |= b
+            if o1 >= 0:
+                b = (v >> 8) & 0xFF
+                if b:
+                    fb[o1 + x] |= b
+            if o2 >= 0:
+                b = (v >> 16) & 0xFF
+                if b:
+                    fb[o2 + x] |= b
 
     def _cursor(self, fb, off):
         """The filled marker, over the empty one baked into the row.  Drawn a
@@ -689,7 +859,7 @@ class Config:
                 if (m >> bit) & 1:
                     y = wy + bit
                     if 0 <= y < h:
-                        fb[(LIST_P0 + (y >> 3)) * W + MARK_X + j] |= 1 << (y & 7)
+                        fb[(y >> 3) * W + MARK_X + j] |= 1 << (y & 7)
 
     def _scrollbar(self, fb, npage, off):
         """A 2px solid thumb against a 1px dotted track.  Both the same width
@@ -716,7 +886,7 @@ class Config:
                     thumb |= 1 << y
                 elif not (gy & 1):
                     track |= 1 << y
-            o = (LIST_P0 + p) * W + BAR_X
+            o = p * W + BAR_X
             fb[o] = thumb | track
             for j in range(1, BAR_W):
                 fb[o + j] = thumb

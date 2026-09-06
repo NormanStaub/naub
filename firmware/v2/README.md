@@ -213,10 +213,23 @@ over nine steps. The two rows agree in both directions — the friendly one
 writes the raw one, and turning the raw one moves the friendly one to whatever
 it now means. Panel default contrast is 25, top and bottom of that same range.
 
-`SHADING` cycles the grayscale modes from the bring-up experiment
-(`graybars.MODES`), with a little waving flag beside it — a dithered
-black-to-white ramp in a band displaced by a sine, quantised to that mode's
-level count. Nothing is wired to it yet.
+`SHADING` cycles the grayscale modes from the bring-up experiment, with a
+little waving flag beside it that **cycles while the row is highlighted** — a
+black-to-white gradient in a band displaced by a sine, 16 phases of it.
+
+The gradient is `host/frc.py`'s encoder transcribed onto the device, so the
+patch shows what the switcher's icons will actually look like rather than an
+impression of them — which is why the config screen runs **four FRC planes**.
+The modes offered are the frame counts that divide that cycle (`1F SPATIAL`,
+`2F TEMPORAL`, `4F HYBRID`); a 3-frame pattern inside a 4-frame loop repeats a
+frame and shows the wrong grey. Nothing is wired to the setting yet.
+
+Measured with the flag on screen: an **85 Hz grey cycle**, above the panel's own
+77 Hz. Getting there meant redrawing only the list for animation frames
+(`render()` on all four planes is 21 ms and dropped it to 62 Hz), composing the
+list once into a scratch rather than per plane, and hoisting the patch
+overlay's page arithmetic out of its column loop (4.9 ms → 2.4). When no grey is
+on screen the loop pushes one plane instead of four.
 
 The list **scrolls smoothly**, which is the one place this screen leaves the
 page grid: mid-slide the window sits at an offset that is not a multiple of 8,

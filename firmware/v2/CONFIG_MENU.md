@@ -35,6 +35,10 @@ state you are in, and an invisible mode is exactly how someone changes a
 setting they did not mean to. Splitting "move" and "change" across two knobs
 does the same job with nothing hidden.
 
+**The screen runs four FRC planes** so the shading patch can show real greys.
+Everything else on it is identical across the four, so the caller pushes just
+one of them whenever no grey is on screen — ask `cfg.gray()`.
+
 **The list scrolls smoothly.** Rows are 16 px — two pages — so a settled window
 is five byte-slice copies. While it is easing toward the row the cursor is on,
 though, the window sits at offsets that are *not* multiples of 8, and the blit
@@ -151,12 +155,24 @@ knob labels already say.
 
 ## Adding artwork
 
-`art` is a tuple of frames indexed by the value, so the flipbook is `art[val]`
-and there is no logic anywhere. Each frame is:
+`art` is indexed by the value, so a flipbook is `art[val]` and there is no
+logic anywhere. Each frame is:
 
 ```python
 bytes(ROW_P * ART_W)      # 2 pages x 30 columns = 60 bytes, 16px tall
 ```
+
+There are two shapes, told apart by type rather than by a field no other row
+would use (`_animated()`):
+
+| shape | what it is |
+|---|---|
+| `art[val]` → `bytes` | a still. Baked into the row's strip once. |
+| `art[val][phase][plane]` → `bytes` | an animation, per FRC plane. Composited at draw time. |
+
+A still costs nothing to show. An animation costs a redraw per phase and makes
+the screen push four planes instead of one while it is visible, so use one only
+where the movement *is* the information.
 
 Same bit layout as a framebuffer page: `frame[page * ART_W + x]`, bit
 `1 << (y & 7)`, LSB at the top of the page. Leave row 0 and row 15 clear or the
@@ -176,18 +192,31 @@ computed.
 perspective projection changes by well under a pixel per step at this size. A
 flipbook whose frames are identical is not a flipbook.
 
-**`SHADING`'s art is a little waving flag**: a black-to-white ramp, dithered,
-inside a band displaced by a sine. The ramp is quantised to that mode's level
-count, which is what differs between the four — two levels give a hard edge
-across the middle, five give something that passes for a gradient at 30 pixels
-wide.
+**`SHADING`'s art is a little waving flag**: a black-to-white gradient inside
+a band displaced by a sine, at 16 phases, cycling while the row is highlighted.
 
-Two details it needed, both found by drawing it wrong first. The band is
-**outlined**, because without an outline the flag dissolves wherever the ramp
-goes light and reads as a blob fading out rather than a shape. And the outline
-is **joined column to column**, because a sine sampled per column steps by more
-than a pixel and leaves a dotted trail otherwise. It still cannot show the
-*temporal* half of a mode; no still frame can.
+The gradient is **`host/frc.py`'s encoder transcribed** — integer duty, a 4×4
+Bayer dither on the fractional residual, phase rotated by `(x+y)%n` — because
+the whole point of the patch is to show what the app switcher's icons will look
+like, and the icons are that function's output. Approximating it would have
+made the patch a decoration.
+
+That is why this screen has **four planes**. The greys only exist across the
+FRC cycle, so a one-plane screen could only ever show an impression of them.
+
+The modes are `1F SPATIAL`, `2F TEMPORAL`, `4F HYBRID` — the frame counts that
+*divide* the four-plane cycle, so each is shown exactly. `graybars.MODES` also
+has 3-frame variants; a 3-frame pattern inside a 4-frame loop repeats one of
+its frames, which is a different duty and therefore a different grey. A patch
+that lied about the one thing it is for is worse than a missing option.
+
+Three details it needed, all found by drawing it wrong first. The band is
+**outlined**, or the flag dissolves wherever the ramp goes light and reads as a
+blob fading out rather than a shape. The outline is **joined column to column**,
+or a sine sampled per column leaves a dotted trail. And the wave is a per-column
+vertical **shift of the cloth**, not a re-dither per phase — which is both what
+a flag does and what makes 192 frames build in 200 ms at import instead of
+re-dithering 30×14 pixels every frame.
 
 ## Units
 
@@ -314,16 +343,25 @@ cycle is the other way back, since nothing here is saved.
 
 ## 5. Redrawing
 
-| what changed | call | measured |
+| what changed | call | measured (4 planes) |
 |---|---|---|
-| a value (`adjust`, `click`) | rebuilds that row's strip for you, then `draw_list()` | 3.4 ms |
-| the cursor, settled | `draw_list()` | 1.9 ms |
-| the cursor, mid-slide | `draw_list()`, shifting bits | 7.7 ms |
-| the tab | `render()` | 5.1 ms |
+| a value, a tab, a submenu | `render()` | 21.4 ms |
+| the list: a slide or a wave, settled | `draw_list()` | 5.7 ms |
+| the list, mid-slide | `draw_list()`, shifting bits | 13.3 ms |
+| pushing all four planes | `show_pages()` ×4 | 7.0 ms |
 
-The mid-slide figure is what smooth scrolling costs: about six extra
-milliseconds a frame for the ~12 frames a scroll lasts, which still fits inside
-the 10.8 ms the frame loop is paced to, alongside the 1.8 ms frame push.
+**Animation must call `draw_list()`, not `render()`.** The slide and the wave
+move the list and nothing else; going through `render()` redrew the header and
+the tab bar on all four planes too, and measured a grey cycle of **62 Hz** —
+below the panel's own 77, where FRC starts to shimmer. With `draw_list()` alone
+it holds **85 Hz**.
+
+Inside that, `draw_list` composes the list **once** into a scratch and copies it
+to the four planes, because only the shading patch differs between them. The
+patch overlay was 4.9 ms until its three destination page bases were hoisted out
+of the column loop; it is 2.4 ms now. Watch for MicroPython's small-int boundary
+in this kind of code: shifting a 16-bit value up 40 bits makes a 56-bit integer,
+which leaves the small-int path for the heap, thirty times a plane a frame.
 
 That shift is as cheap as Python gets here. Measured against 256-entry lookup
 tables (6.5 ms vs the plain shift's 6.8 — 5%, for 4 kB of tables), `zip` over
@@ -344,11 +382,14 @@ mixer and EQ redraw on a 16 ms tick because their meters move; a settings list
 changes when a knob does and not otherwise, so between events the loop pushes
 the same bytes and the mode holds the full 92.4 Hz.
 
-The scroll is not an exception to that: it asks for its own redraws through
-`step()` and stops asking when it arrives. That is the shape any animation here
-should take — self-limiting, and started by an input. If you find yourself
-wanting a blink or a marquee, price it first: those cost a redraw per tick *for
-ever*, to say something the inverted tab and the filled cursor already say.
+The two animations are not exceptions to that, because neither runs unasked.
+The scroll asks for redraws through `step()` and stops when it arrives; the
+shading flag waves only while its own row is highlighted, and `step()` needs the
+clock passed in (`step(now)`) to do it at all. That is the shape any animation
+here should take — self-limiting, and tied to something the user is looking at.
+If you find yourself wanting a blink or a marquee, price it first: those cost a
+redraw per tick *for ever*, to say something the inverted tab and the filled
+cursor already say.
 
 ---
 

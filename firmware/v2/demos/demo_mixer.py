@@ -143,6 +143,11 @@ mx_views = [disp.make_views(fb) for fb in mx.planes]
 dr_views = [disp.make_views(fb) for fb in dr.planes]
 eq_views = [disp.make_views(fb) for fb in eq_scr.planes]
 cfg_views = [disp.make_views(fb) for fb in cfg.planes]
+# The config screen is four FRC planes so its SHADING patch can show what the
+# switcher's icons really look like.  Nothing else on it differs between the
+# planes, so when no grey is on screen we push ONE of them and save three
+# quarters of the frame cost.
+cfg_flat = cfg_views[:1]
 
 # LOW is a low shelf, MID a peak, HIGH a high shelf: the tone-control split,
 # and what the host writes as LSC / PK / HSC.  The host overwrites all of this
@@ -157,6 +162,7 @@ for _i, (_k, _f, _q) in enumerate(EQ_INIT):
 eq_param = [P_GAIN] * eqscreen.NBAND      # which parameter each knob edits
 eq_dirty = True
 cfg_dirty = False                         # the settings screen needs redrawing
+cfg_moved = False                         # ... just its list: a slide or a wave
 eq_ys = None                              # cached curve; None = recompute
 sys_lv = [0.0] * eqscreen.NMETER          # the system spectrum, from the host
 
@@ -401,7 +407,7 @@ def screen_views(m=None):
     if m == EQ_MODE:
         return eq_views
     if m == CONFIG_MODE:
-        return cfg_views
+        return cfg_views if cfg.gray() else cfg_flat
     return mx_views
 
 
@@ -804,12 +810,27 @@ while True:
         if bar_moving:
             bar_moving = mx.step_foot()
             sync_foot()
-        if cfg.step():
-            cfg_dirty = True
+        if cfg.step(now):
+            cfg_moved = True
         if cfg_dirty:
-            cfg.render()
+            cfg.render()          # a value, a tab, a submenu: all of it
             sync_foot()
-            cfg_dirty = False
+            cfg_dirty = cfg_moved = False
+            # Four planes cost four pushes, so only cycle them while there is
+            # actually grey on screen.  set_screen resets the plane counter, so
+            # only when the answer CHANGES -- calling it every frame would hold
+            # the FRC cycle at plane 0 and the greys would collapse.
+            want = screen_views()
+            if want is not views:
+                set_screen(want)
+        elif cfg_moved:
+            # The slide and the flag's wave move the LIST and nothing else.
+            # Going through render() for them redrew the header and the tab bar
+            # on all four planes as well, which cost enough to drag the grey
+            # cycle down to 62 Hz -- below the panel's own 77, where FRC starts
+            # to shimmer.  draw_list alone holds the full rate.
+            cfg.draw_list()
+            cfg_moved = False
     elif mx.mode == EQ_MODE:
         if bar_moving:
             bar_moving = mx.step_foot()

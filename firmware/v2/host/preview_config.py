@@ -32,11 +32,17 @@ def build():
 
 
 def compose(cfg, mx):
-    """Config screen on pages 0..6, the mixer's mode bar on page 7."""
-    fb = bytearray(cfg.planes[0])
+    """Config screen on pages 0..6, the mixer's mode bar on page 7 -- all four
+    FRC planes, because the SHADING patch is grey and the greys only exist
+    across the cycle.  frc.avg_image averages them, which is what the eye does
+    at 92 Hz."""
+    out = []
     o = mixer.PAGE_FOOT * gfx.W
-    fb[o:o + gfx.W] = mx.planes[0][o:o + gfx.W]
-    return fb
+    for p in cfg.planes:
+        fb = bytearray(p)
+        fb[o:o + gfx.W] = mx.planes[0][o:o + gfx.W]
+        out.append(fb)
+    return out
 
 
 def shots():
@@ -50,7 +56,7 @@ def shots():
         while settle and cfg.step():
             pass
         cfg.render()
-        out.append((frc.avg_image([compose(cfg, mx)], SCALE), tag))
+        out.append((frc.avg_image(compose(cfg, mx), SCALE), tag))
 
     snap('DISP tab, cursor on the view angle: 90 deg = contrast 25')
 
@@ -69,14 +75,17 @@ def shots():
     cfg.scroll(+1)
     snap('SHADING, with a little waving gradient beside it')
 
-    for _ in range(3):
-        cfg.adjust(-1)
-    snap('1F SPATIAL: two levels, so the flag is a hard edge')
-
-    cfg.adjust(+2)
-    snap('3F HYBRID: four levels, and the ramp reads as a ramp')
+    cfg.adjust(-2)
+    snap('1F SPATIAL: one plane, so it is ordered dither and nothing else')
 
     cfg.adjust(+1)
+    snap('2F TEMPORAL: two planes')
+
+    cfg.adjust(+1)
+    for _ in range(6):                        # let the wave move on a little
+        cfg.phase += 1
+    snap('4F HYBRID again, further through the wave')
+
     cfg.scroll(+2)
     for _ in range(4):
         cfg.step()
