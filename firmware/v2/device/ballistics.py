@@ -16,8 +16,12 @@ the bar closes per update; PEAK_FALL is the same for the marker riding above
 it, and being ~8x slower is what makes the marker detach, hang, and settle
 rather than sit on the bar.
 
-Fractions of a gap, not pixels per second, so they are tied to the update rate:
-tuned for a 16 ms tick (62.5 Hz).  At half the rate, roughly double both.
+Fractions of a gap, not pixels per second, so they are tied to the update rate
+-- and the rate is not the one the caller asks for.  demo_mixer gates these on
+a 16 ms tick, but it can only test that gate once a frame, so at the panel's
+10.8 ms frame they run every 21.7 ms (46 Hz).  These numbers were tuned by eye
+against that, not against the 16 ms the constant names.  Change the pacing and
+they retime themselves; halve the period and roughly halve both.
 
 **PEAK_GAP** is a drawing rule rather than a ballistic: the marker is drawn one
 pixel clear of the bar's leading edge instead of on top of it.  Drawn at the

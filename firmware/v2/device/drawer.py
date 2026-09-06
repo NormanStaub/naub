@@ -45,6 +45,8 @@ the panel shows.
 """
 import ballistics
 import gfx
+import wipe           # for EDGE_W.  Both transitions lead with the same rule,
+                      # so how thick that rule is lives in one place.
 
 W = gfx.W
 _ZERO = bytes(W)
@@ -53,6 +55,7 @@ _ZERO = bytes(W)
 PANEL_P0, PANEL_P1 = 2, 6     # the mixer's meter band; the pages we take over
 NPAGE = PANEL_P1 - PANEL_P0 + 1
 H = NPAGE * 8                 # 40 px of drop
+EDGE_W = wipe.EDGE_W
 N_PLANES = 4
 
 # Panel-local y runs 0..39 (screen y = panel y + PANEL_P0 * 8).
@@ -433,14 +436,21 @@ class Drawer:
                 for x in range(W):
                     dst[x] = (src[x] & m) | (dst[x] & keep)
         if reveal < H:
-            # The wipe's edge: a solid rule on the last revealed row, so the
+            # The wipe's edge: a solid rule on the last revealed rows, so the
             # panel reads as a surface sliding over the meters rather than as
-            # content appearing out of nowhere.
-            y = reveal - 1
+            # content appearing out of nowhere.  EDGE_W rows, not one: a single
+            # row of ink at the panel's default contrast barely registers for
+            # the one animation step it is there.  The extra row goes ABOVE --
+            # behind the edge, into the panel it has already revealed -- so the
+            # boundary stays on `reveal` and the thickness reads as a trail.
             row = self.fpage
-            b = 1 << (y & 7)
-            p = PANEL_P0 + (y >> 3)
-            for k in range(self.n):
-                dst = row[k][p]
-                for x in range(W):
-                    dst[x] |= b
+            for j in range(EDGE_W):
+                y = reveal - 1 - j
+                if y < 0:
+                    break
+                b = 1 << (y & 7)
+                p = PANEL_P0 + (y >> 3)
+                for k in range(self.n):
+                    dst = row[k][p]
+                    for x in range(W):
+                        dst[x] |= b

@@ -41,6 +41,17 @@ SNAP = 1.5                    # px: below this, land on the target.  An
                               # exponential approach never actually arrives,
                               # and the last pixel would crawl for ever.
 EDGE = 0xFF                   # the leading line, full height of the band
+EDGE_W = 2                    # px.  One pixel was too thin to read: at the
+                              # panel's default contrast (25, the top-down end
+                              # of the view-angle range) a single column of ink
+                              # that is on the glass for one animation step is
+                              # most of the way to invisible, and the wipe read
+                              # as content changing rather than as an edge
+                              # sweeping over it.  The extra column is added
+                              # BEHIND the line -- on the side already showing
+                              # the new screen -- so the boundary between old
+                              # and new stays exactly where the maths puts it
+                              # and the thickness reads as a trail.
 
 RIGHT_TO_LEFT = -1
 LEFT_TO_RIGHT = 1
@@ -91,9 +102,14 @@ class Wipe:
                     dst[o:o + lo] = new[o:o + lo]
                 if lo < W:
                     dst[o + lo:o + W] = old[o + lo:o + W]
-        if 0 <= x < W:
-            for p in range(self.p0, self.p1 + 1):
-                dst[p * W + x] = EDGE
+        # the line, plus EDGE_W-1 columns of trail behind it.  Travelling
+        # left, "behind" is to the right (the columns it has already turned
+        # new); travelling right, it is to the left.
+        for j in range(EDGE_W):
+            xj = x - j * self.dir
+            if 0 <= xj < W:
+                for p in range(self.p0, self.p1 + 1):
+                    dst[p * W + xj] = EDGE
 
         d = self.target - self.pos
         if -SNAP < d < SNAP:

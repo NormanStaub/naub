@@ -65,10 +65,19 @@ import mixer, wheel, wipe
 import switcher_data
 
 HOLD = 0.6            # seconds held = mute rather than open the picker
-TICK_MS = 16          # meter update rate; the FALL constants are tuned to it
+TICK_MS = 16          # meter update rate the code ASKS for.  What it gets is
+                      # the next whole frame at or after that, so at a 10.8 ms
+                      # frame the meters actually run on 21.7 ms / 46 Hz -- the
+                      # rate ballistics.FALL was tuned against.  Anything that
+                      # needs a real period should say so in ms and derive it
+                      # from FRAME_NS, the way _ease() does.
 MARQ_MS = 140         # how often a too-long name scrolls one pixel
-DROP = 0.35           # per-frame fraction of the remaining drop distance
-EASE = 0.30           # ... and of the remaining scroll distance
+# How long the drawer takes to fall, to scroll one slot, and how long a mode
+# change takes to sweep across.  Milliseconds, NOT per-frame fractions -- see
+# _ease() below for why that distinction cost the feel of this device once.
+DROP_MS = 110         # the panel falling 40 px
+SCROLL_MS = 119       # the shelf moving one slot
+WIPE_MS = 282         # the mode change sweeping 128 px
 LIVE_S = 1.0          # no `meter` for this long = the host went away
 SIMULATE = False      # invent levels with no host?  See the note above.
 
@@ -101,6 +110,32 @@ TICK_NS = TICK_MS * 1000000
 MARQ_NS = MARQ_MS * 1000000
 HOLD_NS = int(HOLD * 1000000000.0)
 LIVE_NS = int(LIVE_S * 1000000000.0)
+
+def _ease(ms, residual):
+    """A 'fraction of the remaining distance per frame' that lands in `ms`.
+
+    Every eased animation on this device is written as a fraction of what is
+    left, applied once a frame.  That states a speed per FRAME, not a speed --
+    and the frame rate is not a constant of the design.  Pacing the loop to the
+    panel took it from ~380 fps to 92.3, which made every one of them 4x slower
+    without touching a number: the drawer's 29 ms fall became 110, the shelf's
+    scroll with it.  (The wipe, gated on the 16 ms meter tick instead, took a
+    milder 18% -- a 16 ms gate tested only every 10.8 ms fires every 21.7.)
+
+    So state the milliseconds and derive the fraction from whatever FRAME_NS
+    turns out to be.  `residual` is the fraction of the distance still left
+    when the motion gives up and snaps -- SNAP over the distance travelled.
+    Once at import, never per frame: the loop is hard paced, so the frame
+    period is a constant and this is just arithmetic done early.
+    """
+    n = ms * 1000000.0 / FRAME_NS
+    if n <= 1.0:
+        return 1.0
+    return 1.0 - residual ** (1.0 / n)
+
+
+DROP = _ease(DROP_MS, 0.5 / float(drawer.H))    # SNAP 0.5 px of a 40 px fall
+EASE = _ease(SCROLL_MS, 0.02)                   # ... of one slot
 
 _ZERO_SPEC = [0.0] * 21   # no host = no spectrum, so show a flat floor
 
@@ -169,7 +204,7 @@ sys_lv = [0.0] * eqscreen.NMETER          # the system spectrum, from the host
 # A mode change wipes right to left.  The mode bar is left out of it so its
 # ticks can run their own animation underneath -- two movements that mean two
 # different things.
-tr = wipe.Wipe(p0=0, p1=6)
+tr = wipe.Wipe(p0=0, p1=6, ease=_ease(WIPE_MS, wipe.SNAP / float(mixer.W)))
 tr_fb = bytearray(mixer.W * 8)
 # a LIST of planes, like mx_views/dr_views: the frame loop indexes views[plane]
 # and hands the result to show_pages(), which wants that plane's page views
@@ -217,7 +252,7 @@ last = [e.position for e in encs]
 was = [False] * len(sws)
 press_t = [0] * len(sws)
 bwas = [False] * len(btns)
-t_push = t_marq = t_wipe = time.monotonic_ns()
+t_push = t_marq = time.monotonic_ns()
 
 views = mx_views
 n_planes = len(views)      # mixer is binary (1 plane); the drawer is FRC (4)
@@ -873,10 +908,15 @@ while True:
 
     # ---- the mode wipe -------------------------------------------------
     # Last, so the screens underneath have already been updated this frame:
-    # the incoming half of the wipe is live, not a still.  Stepped on the same
-    # tick as everything else, or at 380 fps it would be over in 37 ms.
-    if tr.active and now - t_wipe >= TICK_NS:
-        t_wipe = now
+    # the incoming half of the wipe is live, not a still.
+    #
+    # Stepped PER FRAME, not on the 16 ms meter tick.  That gate is tested only
+    # when a frame comes round, so at a 10.8 ms frame it fires every 21.7 -- the
+    # line crossed the panel in 13 jumps of up to 27 px, which is not a line
+    # sweeping across so much as a line appearing in four or five places.  A
+    # frame-locked step covers the same 282 ms in 26, and the duration is
+    # WIPE_MS whatever the pacing does next.
+    if tr.active:
         o = mixer.PAGE_FOOT * mixer.W          # the mode bar is not wiped
         tr_fb[o:o + mixer.W] = mx.planes[0][o:o + mixer.W]
         if not tr.step(tr_fb):

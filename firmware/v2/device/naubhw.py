@@ -2,7 +2,7 @@
 buttons with all the bring-up lessons baked in (PCB_DESIGN.md section 1 pin map).
 
     import naubhw
-    disp = naubhw.display()          # ST7565 at 8 MHz, contrast 31, 180 flip
+    disp = naubhw.display()          # ST7565 at 8 MHz, contrast 25, 180 flip
     bl   = naubhw.Backlight()        # bl.set(80)
     encs = naubhw.encoders()         # [ENC1..ENC4], one count per detent
     sws  = naubhw.encoder_switches() # [SW1..SW4] DigitalInOut, pulled up
