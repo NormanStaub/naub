@@ -1,4 +1,14 @@
-# naub host helper (Windows V1)
+# naub host helper (Windows V1) — ARCHIVED
+
+> **This is the retired V1 host. Do not wire it up.**
+>
+> V1 is retired: the e-paper panel, proto=1, and this helper. The always-on
+> process is now [`../naubd`](../naubd), which speaks proto=2 and drives the V2
+> panel. For firmware development against V2 use
+> [`../firmware/v2/host/naub_bridge.py`](../firmware/v2/host).
+>
+> Kept for reference — the WASAPI and icon-dithering work here is where several
+> of the V2 host's decisions came from.
 
 The small host-side app that makes naub's **per-app volume** work — the
 deej-style half of the project. It bridges the device and Windows audio:

@@ -1,12 +1,13 @@
 //! USB CDC serial transport: line framing + naub data-port autodetect.
 //!
 //! Discovery is by USB VID/PID (not COM-port probing of every device), so
-//! Bluetooth/PCI ports are never opened -- that class of hang simply can't happen.
-//! The Pico exposes two CDC ports (console + data); we still send `hello` and keep
-//! whichever answers the `naub ` banner, since only the data port replies.
+//! Bluetooth/PCI ports are never opened -- that class of hang simply can't
+//! happen. The Pico exposes two CDC ports (console + data) and the data one is
+//! picked by interface number; see [`autodetect`] for why it is not picked by
+//! asking the device to identify itself.
 
 use std::io::{ErrorKind, Read, Write};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serialport::{SerialPort, SerialPortType};
 
@@ -19,12 +20,31 @@ pub struct SerialLink {
 }
 
 impl SerialLink {
+    /// How long to let the device notice DTR before the first line goes out.
+    /// See [`SerialLink::open`].
+    const DTR_SETTLE: Duration = Duration::from_millis(250);
+
     pub fn open(name: &str) -> serialport::Result<Self> {
         // Baud is irrelevant for USB CDC but required by the API. Short read
         // timeout so read_lines() polls without blocking the event loop.
+        //
+        // DTR is not a formality. CircuitPython gates `usb_cdc.data` on it:
+        // the device's `Link.send()` checks `port.connected`, which is false
+        // until the host asserts DTR, and it silently DROPS every line until
+        // then. It is set as part of opening (what pyserial's `dtr = True`
+        // before `open()` does) rather than afterwards, so there is no window
+        // where the port is open and the device still thinks nobody is there.
         let port = serialport::new(name, 115_200)
             .timeout(Duration::from_millis(10))
+            .dtr_on_open(true)
             .open()?;
+        // Even then, `connected` does not flip the instant the line does.
+        // Writing `hello` immediately means the device runs `announce()` while
+        // it still believes it is unconnected and throws the banner away -- so
+        // the host sees a device that never identifies itself, on a link that
+        // is otherwise working perfectly. Costs a quarter second, once, per
+        // connect.
+        std::thread::sleep(Self::DTR_SETTLE);
         Ok(Self { port, buf: Vec::with_capacity(512) })
     }
 
@@ -88,37 +108,39 @@ pub fn list_ports() -> Vec<(String, String)> {
         .collect()
 }
 
-/// Find the naub data port: probe only USB ports with a known VID, keep the one
-/// that answers the banner.
+/// Find the naub **data** port among the board's two CDC interfaces.
+///
+/// By USB interface number, not by handshake. CircuitPython puts the REPL on
+/// the first CDC interface and the data port on the second, so the lowest
+/// interface number is the console and the highest is the data port -- which is
+/// how `naub_bridge.py::find_ports` does it, and it is the right way round.
+///
+/// The obvious alternative -- send `hello` and keep whichever answers the
+/// banner -- looks more rigorous and is actually wrong: the device answers only
+/// while `usb_cdc.data.connected` is true, and the whole premise of the link is
+/// that the **host** pushes state to a device that boots knowing nothing
+/// (PROTOCOL.md §3). A device that is up but not currently talking back is a
+/// normal state, and a probe that insists on a reply refuses to connect to it
+/// at all -- observed: the Python bridge streaming happily to a board that
+/// `--probe` reported as "not found".
+///
+/// Before `boot.py` takes effect there is only ONE port, which is how "not
+/// power cycled yet" is detected -- there is no data port to return.
 pub fn autodetect() -> Option<String> {
-    let ports = serialport::available_ports().ok()?;
-    let mut candidates: Vec<String> = Vec::new();
-    for p in &ports {
-        if let SerialPortType::UsbPort(info) = &p.port_type {
-            if NAUB_VIDS.contains(&info.vid) {
-                candidates.push(p.port_name.clone());
+    let mut candidates: Vec<(u8, String)> = serialport::available_ports()
+        .ok()?
+        .into_iter()
+        .filter_map(|p| match &p.port_type {
+            SerialPortType::UsbPort(info) if NAUB_VIDS.contains(&info.vid) => {
+                Some((info.interface.unwrap_or(0), p.port_name.clone()))
             }
-        }
+            _ => None,
+        })
+        .collect();
+    if candidates.len() < 2 {
+        return None; // console only: boot.py has not taken effect yet
     }
-    candidates.into_iter().find(|name| probe(name))
+    candidates.sort_by_key(|(iface, _)| *iface);
+    candidates.pop().map(|(_, name)| name)
 }
 
-fn probe(name: &str) -> bool {
-    let mut link = match SerialLink::open(name) {
-        Ok(l) => l,
-        Err(_) => return false,
-    };
-    if link.write_line(&crate::protocol::hello()).is_err() {
-        return false;
-    }
-    let deadline = Instant::now() + Duration::from_millis(800);
-    while Instant::now() < deadline {
-        if let Ok(lines) = link.read_lines() {
-            if lines.iter().any(|l| l.starts_with("naub ")) {
-                return true;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    false
-}

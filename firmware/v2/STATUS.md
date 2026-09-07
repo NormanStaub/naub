@@ -66,6 +66,37 @@ detail lives in the commit messages and in `README.md` / `CONFIG_MENU.md` /
 - The loopback capture (a 48 kHz thread) runs **only while the EQ screen is
   up**; `ameter` drops to 5 Hz when the switcher is shut.
 - `naub_bridge.py --sessions` prints the grouped WASAPI table.
+- **`naubd` is now the V2 daemon**, ported from `naub_bridge.py` — the whole of
+  it: meters, `apps`/`ameter`, pins, the EQ into Equalizer APO, and the
+  loopback spectrum with its own FFT. It is what runs at login; the Python
+  bridge stays as the development tool and the two share `pins.json`. proto=1
+  and the V1 Python host are retired.
+- Three things the port turned up, none of them visible from the Python side:
+  - **DTR must be asserted**, or CircuitPython's `usb_cdc.data.connected` stays
+    false and the device silently drops every line it tries to send. The Python
+    bridge sets `dtr = True` before opening; nothing had written down that the
+    device→host direction depends on it.
+  - **And asserting it is not instant.** `connected` flips a moment after the
+    line does, so a host that opens the port and writes `hello` straight away
+    gets no banner: the device runs `announce()` while it still believes nobody
+    is there and throws all three lines away. **`naub_bridge.py` has this race
+    too** — it simply never needed the banner, so nobody noticed the link was
+    one-way on connect. `naubd` waits 250 ms once per connect.
+  - The bridge's `time.sleep(0.002)` means its wake rate is set by whatever
+    else on the PC has raised the Windows timer resolution — measured at
+    **408 Hz**, not the 31.5 Hz its docstring assumes, and unaffected by
+    `--rate`.
+
+### Known and unexplained (device)
+- **`RuntimeError: name too long`** dropped the firmware to the REPL once,
+  during a window when an early build of `naubd` was opening the port, bursting
+  `resync()` at it and closing again about once a second (it was treating a
+  write *timeout* as an unplug). Not reproduced since that was fixed, and not
+  attributed — but a truncated line arriving mid-burst is the obvious suspect,
+  and `demo_mixer`'s wire handlers do no validation: `label` trusts
+  `int(t[1])`, and `apps` will take an arbitrarily long token as an app name.
+  The device should probably not be able to be crashed by anything a host can
+  put on the wire.
 
 ---
 

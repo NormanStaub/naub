@@ -1,13 +1,9 @@
 {
+  "_comment": "naubd needs almost no configuration. The V2 panel picks its own source from the app switcher and the host remembers it in %LOCALAPPDATA%\\naub\\pins.json, so there is no channel->process mapping to write down any more (V1's 'channels' block is ignored if you leave one here). Copy this to config.json only if you need to override a default; without any config.json at all the daemon runs on exactly these values.",
+
   "port": "auto",
-  "refresh_seconds": 2.0,
+  "rate": 50.0,
 
-  "_comment": "Map each naub channel (0-3) to one or more process names (deej-style slider_mapping). The reserved match '__system__' rides the default output device (master volume). 'label' overrides the on-screen text; omit it to use the app's process name. Copy this to config.json and edit. naubd looks for config.json next to the executable, then the current directory.",
-
-  "channels": {
-    "0": { "label": "Spotify", "match": ["spotify.exe"] },
-    "1": { "label": "Browser", "match": ["chrome.exe", "msedge.exe", "firefox.exe"] },
-    "2": { "label": "Discord", "match": ["discord.exe"] },
-    "3": { "label": "System",  "match": ["__system__"] }
-  }
+  "_port": "'auto' finds the board's CDC *data* port by USB VID/PID. Set a name like 'COM10' to pin it.",
+  "_rate": "Meter frames per second, an upper bound rather than a promise. The device smooths these with its own ballistics, so raising it buys very little."
 }

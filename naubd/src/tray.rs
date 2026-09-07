@@ -20,7 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
 
-use crate::app::App;
+use crate::bridge::Bridge;
 use crate::config::Config;
 use crate::logging;
 
@@ -34,9 +34,12 @@ const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const APP_NAME: &str = "naubd";
 
 /// Spawn the daemon on a worker thread, then run the tray message loop.
-pub fn run(cfg: Config) {
-    std::thread::spawn(move || match App::new(cfg) {
-        Ok(mut app) => app.run_forever(),
+///
+/// The bridge is built ON that thread, not here: COM is apartment-bound, and
+/// the WASAPI objects have to live where they are used.
+pub fn run(cfg: Config, verbose: bool) {
+    std::thread::spawn(move || match Bridge::new(cfg.port, cfg.rate, verbose) {
+        Ok(mut b) => b.run_forever(),
         Err(e) => logging::line(&format!("audio init failed: {e}")),
     });
 

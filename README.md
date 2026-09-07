@@ -14,19 +14,25 @@ Raspberry Pi Pico 2 (RP2350) with rotary encoders and an e-paper display.
 | Doc | Purpose |
 |-----|---------|
 | [`WRITEUP.md`](WRITEUP.md) | **Developer handoff** — current state, decisions, gotchas, roadmap |
-| [`PROTOCOL.md`](PROTOCOL.md) | **Host ⇄ device CDC protocol** (proto=1) — per-app volume + program icons |
+| [`PROTOCOL.md`](PROTOCOL.md) | **Host ⇄ device CDC protocol** — proto=2 (V2 mixer, meters, EQ); proto=1 is the retired V1 |
+| [`firmware/v2/STATUS.md`](firmware/v2/STATUS.md) | **V2 state** — what landed, what is unfinished |
 | [`V1_BUILD.md`](V1_BUILD.md) | V1 hardware build outline |
-| [`BOM.md`](BOM.md) | Bill of materials |
+| [`BOM_V2.md`](BOM_V2.md) | Bill of materials (V2; [`BOM.md`](BOM.md) is V1) |
 | [`WIRING.md`](WIRING.md) | Pin-by-pin wiring & pinout spec |
 
 ## Software
 
 | Dir | Purpose |
 |-----|---------|
-| [`firmware/`](firmware/) | CircuitPython firmware — CDC protocol + e-paper with icons |
-| [`host/`](host/) | Windows host helper (Python) — WASAPI per-app volume + icon push |
+| [`firmware/v2/`](firmware/v2/) | **Current** CircuitPython firmware — 128×64 LCD, mixer + EQ + config screens |
+| [`naubd/`](naubd/) | **The always-on Windows daemon** (Rust) — meters, per-app volume, EQ. Runs at login |
+| [`firmware/v2/host/`](firmware/v2/host/) | V2 host-side tooling — the development bridge, deploy, asset generators |
+| [`firmware/`](firmware/) | V1 firmware (e-paper) — retired |
+| [`host/`](host/) | V1 Windows helper (Python) — **archived**, superseded by `naubd/` |
 
 ## Status
 
-Early hardware bring-up (V1 prototype). Hardware and firmware are intended to be
-open source.
+Hardware bring-up. **V2 is the live line**: its firmware and the `naubd` daemon
+are what run day to day. V1 (e-paper panel, proto=1, the Python host in
+`host/`) is retired and kept only for reference. Hardware and firmware are
+intended to be open source.

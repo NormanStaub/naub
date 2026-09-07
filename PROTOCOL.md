@@ -220,6 +220,15 @@ ignores `eq` (the menu still opens; nothing is applied).
 a proto=1 host and a proto=2 device (or vice-versa) interoperate — the EQ feature
 is simply inert on whichever side lacks it.
 
+> **Superseded.** `eq`/`eqset` describe the original three-knob tone control,
+> where a band was a 0–100 knob position. §11's `eqp` / `eqband` replaced it
+> with the full parametric state — gain in **dB**, plus frequency, Q, filter
+> kind and on/off — and that is what `device/eqscreen.py` actually sends. No
+> current host implements `eq`, and neither `naubd` nor `naub_bridge.py`
+> parses it. This section is kept because it explains the *gesture*, which is
+> unchanged: the system knob's click opens the menu, the three app encoders
+> become the bands, and clicking one flattens it.
+
 ---
 
 ## 11. V2 mixer screen (proto=2)
@@ -228,14 +237,16 @@ The V2 panel is a 128×64 LCD showing three app columns at once rather than one
 channel at a time, so it needs *continuous* level data and its own notion of
 "which apps exist". These verbs are additive; a proto=1 host and a V2 device
 interoperate with the meters simply sitting still (§1: unknown verbs are
-ignored). Implemented in `firmware/v2/device/link.py` and
-`firmware/v2/host/naub_bridge.py`.
+ignored). Implemented in `firmware/v2/device/link.py`, and on the host in both
+`naubd/` (the Rust daemon that runs at login) and
+`firmware/v2/host/naub_bridge.py` (the development bridge).
 
 | Message | Dir | Meaning |
 |---|---|---|
 | `meter <v0> <v1> <v2>` | H→D | Live level for each of the three **columns**, 0–100, pushed continuously (50 Hz by default). Purely a display feed — it never affects audio and is never echoed. |
 | `apps <A,B,C>` | H→D | Every app with a **live audio session**, in the host's preference order — the app switcher's list, and what its counter counts. **Comma** separated, because process names can contain spaces. An empty list is legal and means nothing is playing. |
 | `ameter <v0> <v1> …` | H→D | One level per entry of the last `apps` list, 0–100. Sent at the meter rate while the switcher is **open**, and at 5 Hz when it is shut — the device needs it either way, because this is what it times each app's playing against (see *What the device offers*, below). |
+| `smeter <v0> … <v20>` | H→D | The system output's **real spectrum**, 21 log-spaced bands from 20 Hz to 20 kHz, 0–100. Sent at the meter rate, but **only while the EQ screen is up** (`mode` says when) — it is the one meter on the device that is a measurement rather than a shape, because the endpoint mix can be captured where a single session cannot. The count must match `device/eqscreen.NMETER`. |
 | `pick <ch> <APP>` | D→H | The user assigned `<APP>` to column `<ch>` from the switcher. The host **pins** that column: it stops reassigning it as the busiest sessions churn, and it remembers the pin across restarts. **One app, one column** — if another column already holds `<APP>`, the two swap. |
 | `mode <idx>` | D→H | The mode bar was flipped (BTN1 back, BTN2 forward), **and on connect**. `<idx>` indexes the device's mode list — `APP CTRL`, `EQ`, `CUSTOM 1`, `CUSTOM 2`. Not merely informational any more: the host starts and stops the loopback capture with it, so a host that ignores it just does more work than it needs to. |
 | `wheel <0|1>` | D→H | The switcher opened or closed, and on connect. Lets the host meter the app list at a useful rate while it is being looked at and a lazy one when it is not. |
