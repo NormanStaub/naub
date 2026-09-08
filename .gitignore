@@ -52,3 +52,7 @@ pcb/naub/
 
 # Unpacked from the repo-root c_c_red_alert_inet.zip by hand (see firmware/v2/README.md)
 firmware/v2/host/font_src/
+
+# device console captures (bench/diag/conlog.py)
+bench/diag/*.log
+bench/diag/*.stdout

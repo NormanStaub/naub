@@ -589,65 +589,75 @@ while True:
         msgs = pending
         pending = []
     for msg in msgs:
-        t = msg.split()
-        if not t:
-            continue
-        v = t[0]
-        if v == 'meter' and len(t) >= 1 + mixer.NCOL:
-            for c in range(mixer.NCOL):
-                host_lv[c] = int(t[1 + c]) * 0.01
-            t_live = now
-            if not live:
-                live = True
-                print("host connected: live audio")
-        elif v == 'ameter':                       # one level per LIVE app
-            wh.feed([int(x) * 0.01 for x in t[1:]], now)
-        elif v == 'apps':                         # apps with a live session
-            wh.set_live([a for a in ' '.join(t[1:]).split(',') if a], now)
-        elif v == 'label' and len(t) >= 2:
-            mx.set_name(int(t[1]), ' '.join(t[2:]))
-            mx.draw_names()
-            bg_dirty = True
-        elif v == 'level' and len(t) == 3:
-            ch = int(t[1])
-            if ch == mixer.NCOL:
-                mx.sysvol = int(t[2]) * 0.01
-                mx.draw_foot()
-            elif ch < mixer.NCOL:
-                mx.vol[ch] = int(t[2]) * 0.01
-                mx.draw_vol()
-            bg_dirty = True
-        elif v == 'mute' and len(t) == 3:
-            ch = int(t[1])
-            if ch == mixer.NCOL:
-                mx.sysmute = t[2] == '1'
-                mx.draw_foot()
-            elif ch < mixer.NCOL:
-                mx.mute[ch] = t[2] == '1'
-                mx.draw_vol()
-            bg_dirty = True
-        elif v == 'eqcaps' and len(t) >= 7:
-            # nbands fmin fmax maxdb sr ok.  ok=0 is a normal state, not an
-            # error: Equalizer APO attaches per endpoint, so it can be
-            # installed and still inert on the current output.
-            eq_cur.set_rate(float(t[5]))
-            eq_scr.engine = t[6] == '1'
-            eq_ys = None
-            eq_dirty = True
-            print("eq engine: %s" % ("ready" if eq_scr.engine else "INERT"))
-        elif v == 'smeter':
-            sys_lv = [int(x) * 0.01 for x in t[1:]]
-        elif v == 'eqband' and len(t) == 7:
-            i = int(t[1])
-            if 0 <= i < eqscreen.NBAND:
-                eq_cur.set(i, t[2], float(t[3]), float(t[4]), float(t[5]),
-                           t[6] == '1')
+        # A malformed line must never be fatal.  PROTOCOL.md §1 promises
+        # unknown verbs are ignored; a line whose NUMBERS are unparseable
+        # deserves the same, because the wire is not a trusted source.  A
+        # host that dropped half a line -- a timed-out write, a replug
+        # mid-stream -- hands us the tail glued to the next line, and
+        # `int("5hello")` inside the smeter handler took the whole panel
+        # down with it: dead screen, no meters, no knobs, until a reload.
+        try:
+            t = msg.split()
+            if not t:
+                continue
+            v = t[0]
+            if v == 'meter' and len(t) >= 1 + mixer.NCOL:
+                for c in range(mixer.NCOL):
+                    host_lv[c] = int(t[1 + c]) * 0.01
+                t_live = now
+                if not live:
+                    live = True
+                    print("host connected: live audio")
+            elif v == 'ameter':                       # one level per LIVE app
+                wh.feed([int(x) * 0.01 for x in t[1:]], now)
+            elif v == 'apps':                         # apps with a live session
+                wh.set_live([a for a in ' '.join(t[1:]).split(',') if a], now)
+            elif v == 'label' and len(t) >= 2:
+                mx.set_name(int(t[1]), ' '.join(t[2:]))
+                mx.draw_names()
+                bg_dirty = True
+            elif v == 'level' and len(t) == 3:
+                ch = int(t[1])
+                if ch == mixer.NCOL:
+                    mx.sysvol = int(t[2]) * 0.01
+                    mx.draw_foot()
+                elif ch < mixer.NCOL:
+                    mx.vol[ch] = int(t[2]) * 0.01
+                    mx.draw_vol()
+                bg_dirty = True
+            elif v == 'mute' and len(t) == 3:
+                ch = int(t[1])
+                if ch == mixer.NCOL:
+                    mx.sysmute = t[2] == '1'
+                    mx.draw_foot()
+                elif ch < mixer.NCOL:
+                    mx.mute[ch] = t[2] == '1'
+                    mx.draw_vol()
+                bg_dirty = True
+            elif v == 'eqcaps' and len(t) >= 7:
+                # nbands fmin fmax maxdb sr ok.  ok=0 is a normal state, not an
+                # error: Equalizer APO attaches per endpoint, so it can be
+                # installed and still inert on the current output.
+                eq_cur.set_rate(float(t[5]))
+                eq_scr.engine = t[6] == '1'
                 eq_ys = None
                 eq_dirty = True
-        elif v == 'ping':
-            lk.send('pong')
-        elif v == 'hello':
-            announce()
+                print("eq engine: %s" % ("ready" if eq_scr.engine else "INERT"))
+            elif v == 'smeter':
+                sys_lv = [int(x) * 0.01 for x in t[1:]]
+            elif v == 'eqband' and len(t) == 7:
+                i = int(t[1])
+                if 0 <= i < eqscreen.NBAND:
+                    eq_cur.set(i, t[2], float(t[3]), float(t[4]), float(t[5]),
+                               t[6] == '1')
+                    eq_ys = None
+                    eq_dirty = True
+            elif v == 'ping':
+                lk.send('pong')
+            elif v == 'hello':
+                announce()
+        except Exception as e:
+            print("ignoring bad line %r (%s)" % (msg[:60], e))
 
     # ---- knobs ----
     for c in range(mixer.NCOL):

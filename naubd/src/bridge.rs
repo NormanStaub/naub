@@ -37,9 +37,12 @@ const RECONNECT: Duration = Duration::from_secs(1);
 /// Switcher shut: the device only needs enough to time how long each app has
 /// been playing (`device/wheel.py`).
 const AMETER_IDLE: Duration = Duration::from_millis(200);
-/// The longest this loop will ever sleep with a link open. Also the serial
-/// read timeout, so an idle link parks the thread rather than spinning it.
-const MAX_WAIT: Duration = Duration::from_millis(15);
+/// The longest this loop will ever sleep with a link open, and therefore the
+/// worst-case latency on a knob move. Reads do not block (see
+/// `SerialLink::read_lines`), so this cap is the only thing keeping the loop
+/// responsive between meter deadlines -- and the only thing keeping it from
+/// spinning: ~100 wake-ups a second, against the Python bridge's measured 408.
+const MAX_WAIT: Duration = Duration::from_millis(10);
 
 pub struct Bridge {
     audio: Audio,
@@ -147,8 +150,11 @@ impl Bridge {
         } else {
             self.port.clone()
         };
-        let link = SerialLink::open(&name)
+        let mut link = SerialLink::open(&name)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        // Close off anything a previous host left half-written before our own
+        // first command can be appended to it.
+        let _ = link.flush_partial_line();
         log(&format!("data port: {name} at {:.0} Hz", self.rate));
         self.link = Some(link);
         Ok(())
@@ -156,20 +162,27 @@ impl Bridge {
 
     // ---- sending ---------------------------------------------------------
 
-    /// A write TIMEOUT is not a dropped link -- it means the device is not
-    /// draining the port right now, so the line is dropped and the link kept.
-    /// Collapsing the two made `resync()`'s burst (hello, apps, three labels,
-    /// eight levels, eqcaps and a band each) look like an unplug: the daemon
-    /// tore the link down a millisecond after opening it, every single time.
+    /// Any write failure drops the link, timeouts included.
+    ///
+    /// The tempting alternative -- treat a timeout as "device busy, skip this
+    /// line, carry on" -- is what killed the firmware. A write that times out
+    /// has usually already put part of the line on the wire, so carrying on
+    /// appends the next line to an unterminated fragment and hands the device
+    /// a token like `5hello`, which `int()` refuses and code.py dies on.
+    ///
+    /// There is no way to ask how many bytes actually landed, so the only
+    /// honest response to a failed write is to stop trusting the stream.
+    /// Reconnecting costs a quarter second and `resync()` re-pushes every bit
+    /// of state; a corrupted line costs the user their panel. With the write
+    /// timeout at 500 ms rather than 10 this should be a genuine fault and not
+    /// merely a busy moment.
     fn send(&mut self, line: &str) {
-        let err = match &mut self.link {
-            Some(l) => match l.write_line(line) {
-                Ok(()) => return,
-                Err(e) => e,
-            },
+        let failed = match &mut self.link {
+            Some(l) => l.write_line(line).is_err(),
             None => return,
         };
-        if err.kind() != std::io::ErrorKind::TimedOut {
+        if failed {
+            log("write failed; dropping the link rather than desyncing it");
             self.link = None;
         }
     }
@@ -453,9 +466,8 @@ impl Bridge {
         let mut next_scan = Instant::now() + RESCAN;
 
         loop {
-            // Parks the thread on the serial read rather than spinning: the
-            // Python bridge's sleep(0.002) woke it 400 times a second whatever
-            // the meter rate was, and paid interpreter overhead for every one.
+            // Takes only what is already waiting and returns; the sleep at the
+            // bottom of the loop does the pacing.
             let lines = match &mut self.link {
                 Some(l) => match l.read_lines() {
                     Ok(v) => v,

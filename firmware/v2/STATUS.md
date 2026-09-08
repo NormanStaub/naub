@@ -87,16 +87,52 @@ detail lives in the commit messages and in `README.md` / `CONFIG_MENU.md` /
     **408 Hz**, not the 31.5 Hz its docstring assumes, and unaffected by
     `--rate`.
 
+### The board dying: found and fixed
+Caught on the console, reproducible within a second of the daemon connecting:
+
+```
+File "code.py", line 639, in <listcomp>
+ValueError: invalid syntax for integer with base 10
+```
+
+Line 639 is the `smeter` handler, and the value it choked on was a token like
+`5hello` — **a half-written line with the next one glued onto it.**
+
+The cause was on the host. `serialport-rs` has one timeout for both directions,
+and `naubd` set it to 10 ms; `naub_bridge.py` uses `timeout=0` for reads and
+`write_timeout=0.5` for writes, so the daemon's write timeout was **50× shorter
+than the Python's**. At that length `resync()`'s burst timed out routinely — and
+a timed-out write has already put *some* of the line on the wire. The daemon
+then treated a timeout as "device busy, skip this line, carry on", which left
+the device holding an unterminated fragment for the next line to land on.
+
+Fixed on both sides:
+
+- **Host:** write timeout to 500 ms; reads made non-blocking (`bytes_to_read`
+  first, the way pyserial's `in_waiting` does) so the long timeout does not
+  stall the meter loop; line and terminator written in one call; **any** write
+  failure now drops the link instead of continuing on a stream that may be
+  desynced — there is no way to ask how many bytes landed, so carrying on is
+  never safe. On connect the daemon writes a bare newline first, to close off
+  any fragment a previous host left behind (the device's receive buffer
+  survives a soft reload).
+- **Device:** the message dispatch in `demo_mixer.py` is wrapped in
+  `try/except` and prints `ignoring bad line ...`. §1 already promises unknown
+  verbs are ignored; a line whose *numbers* are unparseable deserves the same,
+  because the wire is not a trusted source. Verified by injecting
+  `smeter 10 20 5hello` — the panel now shrugs and keeps rendering at 92 fps.
+
+Regression test: killing the daemon mid-stream six times in a row, which
+reliably poisoned the device before, now leaves it running throughout.
+
+The earlier `RuntimeError: name too long` seen during the same window was never
+reproduced separately, but it is the same shape — a corrupted line reaching a
+handler that did no validation — and the guard covers it.
+
 ### Known and unexplained (device)
-- **`RuntimeError: name too long`** dropped the firmware to the REPL once,
-  during a window when an early build of `naubd` was opening the port, bursting
-  `resync()` at it and closing again about once a second (it was treating a
-  write *timeout* as an unplug). Not reproduced since that was fixed, and not
-  attributed — but a truncated line arriving mid-burst is the obvious suspect,
-  and `demo_mixer`'s wire handlers do no validation: `label` trusts
-  `int(t[1])`, and `apps` will take an arbitrarily long token as an app name.
-  The device should probably not be able to be crashed by anything a host can
-  put on the wire.
+- **`PLANE GUARD`** still fires: `PLANE GUARD: i=2 n_planes=1 len(views)=1
+  mode=0 mx.mode=1` was logged flipping into EQ mode. Harmless (the guard is
+  doing its job) but the underlying mismatch is still there.
 
 ---
 

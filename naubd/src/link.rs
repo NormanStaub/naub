@@ -34,8 +34,20 @@ impl SerialLink {
         // then. It is set as part of opening (what pyserial's `dtr = True`
         // before `open()` does) rather than afterwards, so there is no window
         // where the port is open and the device still thinks nobody is there.
+        // One timeout covers both directions here (serialport-rs has no
+        // separate write timeout), so it is set for the WRITE side and reads
+        // are kept from ever blocking on it -- see `read_lines`.
+        //
+        // It has to be generous. At 10 ms, `resync()`'s burst outran the
+        // driver often enough that writes timed out routinely, and a timed-out
+        // write has already put SOME of the line on the wire: the device was
+        // left holding an unterminated fragment, the next line was appended to
+        // it, and `smeter 12 34 5` + `hello` reached the firmware as
+        // `smeter 12 34 5hello` -- which is an `int()` away from killing
+        // code.py. 500 ms is what naub_bridge.py uses, and at that length a
+        // timeout means something is genuinely wrong rather than merely busy.
         let port = serialport::new(name, 115_200)
-            .timeout(Duration::from_millis(10))
+            .timeout(Duration::from_millis(500))
             .dtr_on_open(true)
             .open()?;
         // Even then, `connected` does not flip the instant the line does.
@@ -48,22 +60,47 @@ impl SerialLink {
         Ok(Self { port, buf: Vec::with_capacity(512) })
     }
 
+    /// Write one line, terminator included, in a **single** call.
+    ///
+    /// Payload and `\n` used to be two `write_all`s, which gave a failure two
+    /// chances to leave the device holding an unterminated fragment. One call
+    /// does not make the write atomic, but it removes the window where the
+    /// line lands and its terminator does not.
     pub fn write_line(&mut self, s: &str) -> std::io::Result<()> {
-        self.port.write_all(s.as_bytes())?;
+        let mut out = Vec::with_capacity(s.len() + 1);
+        out.extend_from_slice(s.as_bytes());
+        out.push(b'\n');
+        self.port.write_all(&out)
+    }
+
+    /// Terminate anything the device may already be holding.
+    ///
+    /// Its receive buffer survives a soft reload, so a fragment left by a
+    /// previous host can still be sitting there waiting to be prepended to our
+    /// first real command. A bare newline closes that fragment off: the device
+    /// parses whatever it was as one junk line and ignores it (PROTOCOL.md §1),
+    /// instead of merging it with `hello`.
+    pub fn flush_partial_line(&mut self) -> std::io::Result<()> {
         self.port.write_all(b"\n")
     }
 
-    /// Drain available bytes and return any complete lines. `Err` means the link
-    /// dropped (device unplugged) -- the caller should reconnect. A read timeout
-    /// is normal (no data) and yields `Ok` with whatever was already buffered.
+    /// Return any complete lines received. `Err` means the link dropped
+    /// (device unplugged) -- the caller should reconnect.
+    ///
+    /// Never blocks: only the bytes already waiting are read, the way
+    /// pyserial's `in_waiting` + `read(n)` does. That is what lets the write
+    /// timeout above be long without the meter loop inheriting it.
     pub fn read_lines(&mut self) -> std::io::Result<Vec<String>> {
-        let mut tmp = [0u8; 256];
-        loop {
+        let waiting = self
+            .port
+            .bytes_to_read()
+            .map_err(|e| std::io::Error::new(ErrorKind::Other, e.to_string()))?;
+        if waiting > 0 {
+            let mut tmp = vec![0u8; waiting as usize];
             match self.port.read(&mut tmp) {
-                Ok(0) => break,
                 Ok(n) => self.buf.extend_from_slice(&tmp[..n]),
-                Err(ref e) if e.kind() == ErrorKind::TimedOut => break,
-                Err(ref e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(ref e) if e.kind() == ErrorKind::TimedOut => {}
+                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
                 Err(e) => return Err(e),
             }
         }
