@@ -599,13 +599,12 @@ impl Bridge {
             if self.link.is_none() {
                 return;
             }
-            // Sleep only the remainder, and only if the serial read did not
-            // already absorb it.
-            let now = Instant::now();
-            let wait = next_meter.saturating_duration_since(now).min(MAX_WAIT);
-            if wait > Duration::from_millis(1) {
-                std::thread::sleep(wait - Duration::from_millis(1));
-            }
+            // Sleep the whole remainder, however short. Waking a millisecond
+            // early to hit the deadline exactly meant spinning through that
+            // millisecond on every meter, a serial poll per pass: 4% of a core,
+            // for a display feed that does not care about a millisecond.
+            let wait = next_meter.saturating_duration_since(Instant::now());
+            std::thread::sleep(wait.min(MAX_WAIT));
         }
     }
 }
