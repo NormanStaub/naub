@@ -1,5 +1,5 @@
-//! Minimal logging: prints to stdout in debug builds (where a console exists) and
-//! always appends to a log file, so the windowless release daemon keeps a record.
+//! Minimal logging: prints to stdout in debug builds and on macOS (where a
+//! release build still has a terminal when it is run from one), and always appends to a log file, so the windowless release daemon keeps a record.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ pub fn init(path: PathBuf) {
 
 pub fn line(msg: &str) {
     let stamped = format!("[{}] {msg}", hhmmss());
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, not(windows)))]
     println!("{stamped}");
     if let Some(p) = LOG_PATH.get() {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {

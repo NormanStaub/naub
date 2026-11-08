@@ -859,6 +859,11 @@ ENC4 lower-right. Non-negotiable lessons baked into `naubhw.py`:
   then Ctrl-D over COM9 soft-reboots it and re-runs `code.py` — that recovered
   it without a replug. `tmp/reboot.py` in the job scratch does exactly this;
   keep `write_timeout` short in case the write does hang.
+- **CIRCUITPY can go read-only to the host with nothing wrong on the board**
+  (`Get-Disk` shows `IsReadOnly True`; `deploy.py` fails with `PermissionError`
+  on the first file). Seen once, cause unknown: the firmware never remounts the
+  drive. A soft reboot does not clear it. `microcontroller.reset()` from the
+  REPL did, and a replug should too.
 - If the ports enumerate but refuse to open right after a physical replug
   (`PermissionError: Access is denied`), that is Windows still tearing down the
   old handles. Wait a few seconds rather than assuming a fault.

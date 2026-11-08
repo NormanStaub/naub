@@ -217,12 +217,18 @@ macOS study and all worth fixing on Windows anyway:
 | `host/gdifont.py` | GDI, and its docstring blames Pillow for something Pillow supports (`.FON` opens with `index=`; the real fault is an unreachable `FT_ENCODING_NONE` charmap). Build-time only, so the answer is `freetype-py` — one platform-neutral path, not a second platform-specific one. |
 | `naub_bridge --rate` | 50 means a measured 31.5 Hz only because of Windows' 15.6 ms timer granularity. Anywhere else it would really be 50, which is the wrong default on a platform where a poll costs a captured buffer instead of a free peak. The rate should be stated, not inherited from a scheduler quirk. |
 
-The structural move, whenever it is worth doing: split `appmeter` / `eqapo` /
-`sysmeter` into platform-suffixed modules behind a small factory — the shape the
-V1 `host/naub_host/` already used (`audio_windows.py`, `eq_windows.py`).
-`naub_bridge.py` needs three changes to be platform-neutral: `PIN_PATH`, the
-`_iface()` branch, and `import appmeter` becoming a dispatch. Doing that on
-Windows first makes any port additive rather than a fork.
+The structural move is **done in `naubd`**, which is what ships: `audio` and
+`tray` are `cfg`-selected files, `sysmeter`, `eqapo` and `appicon` gate only their
+platform parts, and `windows` / `winreg` are target-specific. **The macOS build
+exists but is unproven: type-checked for both Mac targets from Windows, never
+linked or run** (`naubd/macos/TESTING.md`). The Python bridge's own split
+(`PIN_PATH`, the `_iface()` branch, `import appmeter` becoming a dispatch — the
+shape V1's `host/naub_host/` used) only matters if the development bridge is
+wanted on another OS.
+
+`MACOS_PORT.md` was revised on 2026-10-21 for the move to `naubd`: a native
+daemon removes the separate helper the study priced in, but the plumbing costs
+more, and the original full-port estimate is withdrawn until re-done.
 
 ---
 

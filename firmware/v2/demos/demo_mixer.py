@@ -58,6 +58,8 @@
 # follows whichever is on screen.
 #
 # Deploy: python host/deploy.py mixer
+import binascii
+import gc
 import random
 import time
 import naubhw, ccfont, config, drawer, eqcurve, eqscreen, idle, link, media
@@ -612,6 +614,11 @@ while True:
                 wh.feed([int(x) * 0.01 for x in t[1:]], now)
             elif v == 'apps':                         # apps with a live session
                 wh.set_live([a for a in ' '.join(t[1:]).split(',') if a], now)
+            elif v == 'aicon' and len(t) >= 3:        # an app's icon, made live
+                dr.set_icon(' '.join(t[2:]), binascii.a2b_base64(t[1]))
+                print("icon: %s (%d free)" % (' '.join(t[2:]), gc.mem_free()))
+                if mode == 1:
+                    dr.draw_shelf(pos)
             elif v == 'label' and len(t) >= 2:
                 mx.set_name(int(t[1]), ' '.join(t[2:]))
                 mx.draw_names()

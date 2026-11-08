@@ -1,9 +1,10 @@
 //! System-tray shell around the daemon: a hidden message window owns a tray icon
-//! with a right-click menu (Start-with-Windows toggle + Quit). The audio/serial
+//! with a right-click menu (Attach EQ when the current output lacks it,
+//! Start-with-Windows toggle, Quit). The audio/serial
 //! work runs on a worker thread (COM is initialized there); this thread just
 //! pumps Win32 messages.
 
-use windows::core::{w, PCWSTR};
+use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
@@ -22,13 +23,14 @@ use winreg::RegKey;
 
 use crate::bridge::Bridge;
 use crate::config::Config;
-use crate::logging;
+use crate::{admin, eqapo, logging};
 
 const TRAY_CALLBACK: u32 = WM_APP + 1;
 const TRAY_UID: u32 = 1;
 const ID_STATUS: usize = 1;
 const ID_AUTOSTART: usize = 2;
 const ID_QUIT: usize = 3;
+const ID_EQ_ATTACH: usize = 4;
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const APP_NAME: &str = "naubd";
@@ -141,6 +143,27 @@ unsafe fn show_menu(hwnd: HWND) {
     };
     let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, ID_STATUS, w!("naub mixer"));
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    // Asked fresh each time the menu opens: the default output may have
+    // changed since. On a throwaway thread so COM stays off this one.
+    let eq = std::thread::spawn(|| {
+        if !eqapo::installed() {
+            return None;
+        }
+        crate::audio::default_endpoint().map(|(guid, name)| (eqapo::hosts_apo(&guid), guid, name))
+    })
+    .join()
+    .ok()
+    .flatten();
+    let eq_label;
+    if let Some((hosted, _, name)) = &eq {
+        let (flags, text) = if *hosted {
+            (MF_STRING | MF_GRAYED | MF_CHECKED, format!("EQ active on {name}"))
+        } else {
+            (MF_STRING, format!("Attach EQ to {name}"))
+        };
+        eq_label = HSTRING::from(text);
+        let _ = AppendMenuW(menu, flags, ID_EQ_ATTACH, PCWSTR(eq_label.as_ptr()));
+    }
     let check = if autostart_enabled() { MF_CHECKED } else { MF_UNCHECKED };
     let _ = AppendMenuW(menu, MF_STRING | check, ID_AUTOSTART, w!("Start with Windows"));
     let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, w!("Quit"));
@@ -154,12 +177,32 @@ unsafe fn show_menu(hwnd: HWND) {
 
     match cmd.0 as usize {
         ID_AUTOSTART => set_autostart(!autostart_enabled()),
+        ID_EQ_ATTACH => {
+            if let Some((false, guid, name)) = eq {
+                attach_eq(guid, name);
+            }
+        }
         ID_QUIT => {
             remove_tray_icon(hwnd);
             PostQuitMessage(0);
         }
         _ => {}
     }
+}
+
+/// Hand the attach to an elevated copy of this exe (UAC prompt), off the
+/// message thread so the tray stays responsive while the prompt is up. Nothing
+/// reports back here: the daemon's once-a-second EQ check sees the result and
+/// tells the panel.
+fn attach_eq(guid: String, name: String) {
+    std::thread::spawn(move || {
+        logging::line(&format!("eq-attach: {name} {guid}"));
+        match admin::run_elevated(&["--eq-attach", &guid]) {
+            Ok(0) => {}
+            Ok(code) => logging::line(&format!("eq-attach: exit {code} (see the lines above)")),
+            Err(e) => logging::line(&format!("eq-attach: {e}")),
+        }
+    });
 }
 
 // ---- autostart (HKCU Run key) ----

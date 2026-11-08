@@ -1,4 +1,6 @@
-//! The system output's real spectrum, by WASAPI loopback capture.
+//! The system output's real spectrum, by WASAPI loopback capture (a global
+//! process tap on macOS: `audio_mac::capture_loop`; everything but the capture
+//! itself is shared).
 //!
 //! The mixer's per-app meters invent their band shape, because Windows exposes
 //! no per-session spectrum (PROTOCOL.md §11). The system output is different:
@@ -27,10 +29,12 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 
+#[cfg(windows)]
 use windows::Win32::Media::Audio::{
     eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
     AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
 };
+#[cfg(windows)]
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED,
 };
@@ -100,7 +104,13 @@ impl SysMeter {
         let run = Arc::clone(&self.run);
         let rate = Arc::clone(&self.rate);
         run.store(true, Ordering::SeqCst);
+        #[cfg(windows)]
         let handle = std::thread::spawn(move || capture_loop(tx, buf, run, rate));
+        #[cfg(target_os = "macos")]
+        let handle = {
+            let _ = rate; // stored below, from what the tap reports
+            std::thread::spawn(move || crate::audio::capture_loop(tx, run, |x| push(&buf, x)))
+        };
         // Starting costs about as long as the mode wipe takes, so the screen
         // has its spectrum by the time it finishes sliding in.
         match rx.recv_timeout(Duration::from_millis(1500)) {
@@ -259,6 +269,7 @@ fn fft(re: &mut [f64], im: &mut [f64]) {
     }
 }
 
+#[cfg(windows)]
 /// Capture forever into a rolling buffer. Its own thread, so a stalled audio
 /// device can never hold up the serial loop.
 fn capture_loop(
@@ -342,6 +353,7 @@ fn capture_loop(
     }
 }
 
+#[cfg(windows)]
 /// Interleaved endpoint samples -> mono f32 in -1..1.
 ///
 /// The shared-mode mix format is 32-bit float on every machine this has been

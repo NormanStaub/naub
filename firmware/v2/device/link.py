@@ -26,6 +26,9 @@ Verbs used by the mixer screen (V1 verbs kept, `meter` added for V2):
                                   Fast while the switcher is open, 5 Hz
                                   otherwise -- the device times how long each
                                   app has played from these (V2)
+           aicon <b64> <APP>      one app's icon, every tier's planes (800
+                                  bytes before base64); art for the switcher,
+                                  made by the host when the app turns up  (V2)
            eqcaps <n> <fmin> <fmax> <maxdb> <sr> <ok>
                                   what the EQ engine offers, on connect; ok=0
                                   means writing filters would do nothing  (V2)

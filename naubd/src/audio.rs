@@ -37,12 +37,12 @@ use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::Media::Audio::Endpoints::{IAudioEndpointVolume, IAudioMeterInformation};
 use windows::Win32::Media::Audio::{
     eConsole, eRender, AudioSessionStateActive, IAudioSessionControl, IAudioSessionControl2,
-    IAudioSessionManager2, IMMDeviceEnumerator, ISimpleAudioVolume, MMDeviceEnumerator,
+    IAudioSessionManager2, IMMDevice, IMMDeviceEnumerator, ISimpleAudioVolume, MMDeviceEnumerator,
     DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
-    STGM_READ,
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, CLSCTX_INPROC_SERVER,
+    COINIT_MULTITHREADED, STGM_READ,
 };
 use windows::Win32::System::Threading::{
     GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
@@ -95,6 +95,8 @@ pub struct Audio {
     mgrs: Vec<IAudioSessionManager2>,
     built: Instant,
     endpoint: Option<IAudioEndpointVolume>,
+    /// The default endpoint's registry GUID, as of the last refresh.
+    default_guid: Option<String>,
     /// Program key -> every session that program holds, pid-sorted for a stable
     /// read. Insertion order is not meaningful; `seen` carries the ordering.
     by_key: HashMap<String, Vec<Session>>,
@@ -119,6 +121,7 @@ impl Audio {
                 mgrs: Vec::new(),
                 built: Instant::now() - ENDPOINT_REBUILD * 2,
                 endpoint: None,
+                default_guid: None,
                 by_key: HashMap::new(),
                 seen: Vec::new(),
                 pname: HashMap::new(),
@@ -129,6 +132,12 @@ impl Audio {
             a.refresh();
             Ok(a)
         }
+    }
+
+    /// The default output's registry GUID, from the last refresh: free to ask
+    /// once a second, unlike [`default_endpoint`], which builds an enumerator.
+    pub fn default_guid(&self) -> Option<&str> {
+        self.default_guid.as_deref()
     }
 
     /// Why the last refresh came back empty, if it did.
@@ -172,6 +181,7 @@ impl Audio {
         }
         if let Ok(dev) = unsafe { self.enumerator.GetDefaultAudioEndpoint(eRender, eConsole) } {
             self.endpoint = unsafe { dev.Activate(CLSCTX_ALL, None).ok() };
+            self.default_guid = endpoint_guid(&dev);
         }
 
         let mut by_key: HashMap<String, Vec<Session>> = HashMap::new();
@@ -234,6 +244,10 @@ impl Audio {
         }
         if !any && !self.mgrs.is_empty() {
             self.fail = Some("no session enumerator (device changing)".into());
+            // Every manager failing at once is the audio service having been
+            // restarted (attaching the EQ does that) and these being dead,
+            // not a device mid-change: rebuild next pass, not in 15 s.
+            self.built = Instant::now() - ENDPOINT_REBUILD * 2;
             return false;
         }
         self.fail = None;
@@ -264,6 +278,11 @@ impl Audio {
     fn rep(&self, key: &str) -> Option<&Session> {
         let g = self.by_key.get(key)?;
         g.iter().find(|s| s.active()).or_else(|| g.first())
+    }
+
+    /// The exe behind a program key, for its icon.
+    pub fn exe_of(&self, key: &str) -> Option<String> {
+        exe_path_for_pid(self.by_key.get(key)?.first()?.pid)
     }
 
     /// Every app with a live session right now, longest-established first.
@@ -430,26 +449,47 @@ impl Audio {
     }
 }
 
-/// The friendly name of the current default output endpoint, e.g.
-/// "Speakers (High Definition Audio Device)". `eqapo` needs it to answer the
-/// question that actually matters: is the EQ attached to what I am listening to?
-pub fn default_endpoint_name() -> Option<String> {
+/// The current default output endpoint, as `(guid, friendly name)`.
+///
+/// The GUID is the `{...}` that names the endpoint's key under
+/// `MMDevices\Audio\Render`, and it is what `eqapo` must compare against. The
+/// name is only for people: Windows mints a NEW endpoint, with a new GUID and
+/// the same "Speakers (High Definition Audio Device)" name, whenever the
+/// driver is reinstalled. Matching by name is how the EQ went dead while the
+/// status said nothing was wrong with the speakers.
+pub fn default_endpoint() -> Option<(String, String)> {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_INPROC_SERVER).ok()?;
         let dev = enumerator.GetDefaultAudioEndpoint(eRender, eConsole).ok()?;
-        let store = dev.OpenPropertyStore(STGM_READ).ok()?;
-        let v = store
-            .GetValue(&windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName)
-            .ok()?;
-        let s = v.to_string();
-        if s.is_empty() {
-            None
-        } else {
-            Some(s)
-        }
+        let guid = endpoint_guid(&dev)?;
+        let name = dev
+            .OpenPropertyStore(STGM_READ)
+            .and_then(|s| {
+                s.GetValue(&windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName)
+            })
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        let name = if name.is_empty() { guid.clone() } else { name };
+        Some((guid, name))
     }
+}
+
+/// "{0.0.0.00000000}.{guid}" -> "{guid}", lowercased: the endpoint's key name
+/// under `MMDevices\Audio\Render`.
+fn endpoint_guid(dev: &IMMDevice) -> Option<String> {
+    unsafe {
+        let raw = dev.GetId().ok()?;
+        let id = raw.to_string().unwrap_or_default();
+        CoTaskMemFree(Some(raw.0 as *const _));
+        id.rsplit('.').next().filter(|g| g.starts_with('{')).map(|g| g.to_ascii_lowercase())
+    }
+}
+
+/// Just the name, for anything that only has to tell a person which device.
+pub fn default_endpoint_name() -> Option<String> {
+    default_endpoint().map(|(_, name)| name)
 }
 
 /// The key a column, a pin and the device all agree on: the exe basename,

@@ -1,21 +1,79 @@
 # Porting the naub host to macOS — feasibility and requirements
 
 Written 2026-09-06 against `firmware/v2/host/` at `feat/v1-firmware-host` (6c3956e).
-This is a study, not a plan of record, and **no port code was written**.
+**Revised 2026-10-21** after `e166c5b` made `naubd` (Rust) the shipping daemon.
+This is a study, not a plan of record.
 
-Version baseline: the shipping release is **macOS 26 Tahoe**; macOS 27 is expected
-within weeks. Everything below assumes Apple silicon. Where a claim depends on a
-specific macOS version I say so, because this area changed materially at 14.2
-(process taps), 14.4 (the audio-capture TCC category), 15.0 (Sequoia's recurring
-screen-capture consent; ACE→ARK) and 15.2 (small-FAT write performance).
+> **2026-11-08: a port now exists, and is unproven.** `naubd` builds for macOS
+> (`audio_mac.rs`, `dsp.rs`, `appkey.rs`, `tray_mac.rs`), type-checked from
+> Windows and **never linked or run**; `naubd/macos/TESTING.md` is how to test
+> it. It took Phase 3 directly, without Phases 0-2, and made four choices this
+> study did not:
+>
+> - **One tap, aggregate and IOProc per app**, not N taps in one aggregate
+>   (§3.1): a running aggregate's tap list cannot be changed, so a shared one
+>   would glitch every app whenever any app started. FineTune does the same.
+> - **An app at 100% with a flat EQ stays on its direct path** and is only
+>   metered, so §3.2's latency and device-change costs apply only to apps someone
+>   has turned down. Nothing is muted before a real sample proves the grant.
+> - **The EQ is our own biquads in the render path**: §3.4's Option E's DSP
+>   without its HAL plugin, in place of FineTune. This breaks "naub writes no
+>   DSP", knowingly: the render path already exists, and FineTune would have
+>   meant a second engine fighting ours for the same taps.
+> - **The spectrum is a global tap** (§3.5 route a), started on demand as on
+>   Windows.
+>
+> §7's questions 1-3 no longer apply, and 5, 7, 12, 13 and 15 are still open;
+> the test plan measures them. The findings below stand.
+
+> **Read this first: what the revision changed.** The original study priced a
+> port of the *Python* bridge. The thing that now runs at login is `naubd`, and
+> that moves the costs in both directions:
+>
+> - **The audio engine got cheaper.** The study's dominant item was "a real-time
+>   IOProc cannot be CPython, so ship a signed Swift/C helper that Python talks
+>   to over a pipe". `naubd` is already native: the IOProc can live inside it
+>   (the `coreaudio` crate's process-tap feature, over `objc2-core-audio`). The
+>   separate helper, its IPC and its second language disappear. Signing, the
+>   `.app`, the TCC grant and the real-time discipline do not.
+> - **The plumbing got dearer.** `naub_bridge.py` imports nothing Windows-only;
+>   `naubd` has no `#[cfg]` gating at all and does not compile on a Mac — the
+>   tray (`tray.rs`, Win32 + `HKCU\Run`), the `windows::core::Result` in
+>   `Bridge::new`, `winreg` in `eqapo.rs`, and WASAPI in `audio.rs` /
+>   `sysmeter.rs`. The adapter split §6 recommends is now a Rust refactor (§3.0).
+> - **Some §3 findings are about Python and no longer apply to the daemon** —
+>   pyserial's port discovery (§3.8), the faster loop (§3.12), py2app signing
+>   (§3.11). Each is marked where it occurs; they still apply to the
+>   development bridge.
+>
+> **The 8-14 week full-port figure is withdrawn** until it is re-estimated against
+> `naubd`. The platform findings — no cheap per-app peak, no per-app volume API,
+> silent-on-denial TCC, no Equalizer APO — are about macOS, not about our code,
+> and stand.
+
+Version baseline: **macOS 26 Tahoe and later** is the target. Everything below
+assumes Apple silicon. At the 2026-10-21 revision no macOS 27 change to process
+taps, the per-app volume situation or the audio-capture TCC category was found —
+a third-party per-app volume app reports running on 27 using exactly the tap
+mechanism in §3.2 — but that is the absence of a finding, not a verification on
+27. Re-check the 27 SDK headers (`AudioHardwareTapping.h`, `CATapDescription.h`,
+`AudioHardware.h`) before relying on it.
+
+Where a claim depends on a specific macOS version I say so, because this area
+changed materially at 14.2 (process taps), 14.4 (the audio-capture TCC category),
+15.0 (Sequoia's recurring screen-capture consent; ACE→ARK) and 15.2 (small-FAT
+write performance). **A 26+ floor makes all of those moot**, and makes macOS 26's
+`CATapDescription.bundleIDs` / `processRestoreEnabled` (§3.1) unconditionally
+available — which is what pinned columns want.
 
 ---
 
 ## 1. Executive summary
 
 **Partly.** The transport, the deploy path, the bridge loop, the system/master
-volume and the build-time asset tooling all port cleanly — about a week of work,
-no external software. Everything that makes naub *a mixer* does not port cleanly,
+volume and the build-time asset tooling all port cleanly — 1-2 weeks of work for
+the Python bridge, no external software. (For `naubd` add the platform split
+and a menu-bar shell; see the revision note above.) Everything that makes naub *a mixer* does not port cleanly,
 and three findings decide the whole thing.
 
 **1. The free per-app peak meter does not exist on macOS, and its absence
@@ -38,9 +96,11 @@ in 2026 is: tap the process with `CATapMutedWhenTapped` so its direct path to th
 hardware is silenced, then re-render your own gain-scaled copy out to the real
 device. That is not a control API; **that is writing an audio mixer**, with a
 real-time callback that must not allocate, must not lock, and must not touch the
-GIL. It cannot be CPython. A macOS naub that keeps its volume knobs must ship a
-signed native (Swift or C) helper that Python talks to over a pipe. This single
-item dominates the total.
+GIL. It cannot be CPython. *As written*, a macOS naub that keeps its volume knobs
+had to ship a signed native helper that Python talks to over a pipe, and that
+item dominated the total. **Revised:** `naubd` is that native process already, so
+the engine goes inside it and the helper/IPC layer is gone — the real-time code
+itself is still the biggest single item.
 
 **3. There is no Equalizer APO, so the file-writing simplicity that keeps
 `eqapo.py` small has no direct equivalent — but there is one unexpectedly good
@@ -63,13 +123,16 @@ blanket system-audio-recording rights in order to turn a volume knob. That is
 materially worse than the Windows story, and it pushes hard toward shipping a
 signed `.app` ($99/yr Apple Developer Program).
 
-**Bottom line.** A macOS naub that does everything the Windows one does is
-**8-14 weeks of work, and requires a native signed helper component, an Apple
-Developer membership, a TCC audio-capture grant, and a third-party app for EQ.**
-A macOS naub that does the *display*, the *transport*, the *system volume*, the
-*deploy* and the *spectrum* is **1-2 weeks and needs none of that**. The gap
-between those two is almost entirely items 1 and 2 — and they are the same
-engine, built once.
+**Bottom line (revised).** A macOS naub that does everything the Windows one does
+**requires a signed, notarised `.app` (Apple Developer membership), a TCC
+audio-capture grant, a real-time tap engine inside `naubd`, and a third-party app
+for EQ.** The original figure for it — 8-14 weeks, priced on a Python bridge plus
+a separate helper — is withdrawn pending re-estimate against `naubd`. A macOS naub
+that does the *display*, the *transport*, the *system volume* and the *deploy* is
+**1-2 weeks on the Python bridge and needs none of that**; doing it in `naubd`
+costs that plus the platform split. (The *spectrum* needs a tap, and so the grant —
+§3.5; it belongs with the engine, not here.) The gap between the two is almost
+entirely items 1 and 2 — and they are the same engine, built once.
 
 ---
 
@@ -95,8 +158,16 @@ Audio. "External software" means something the *end user* must obtain.
 | 12 | The bridge loop itself | `naub_bridge.py`, 615 lines | Portable as-is; 3 Windows-ish lines. **But** §3.12 — the loop runs *faster* on macOS, and App Nap will throttle it | None | **0.5 d** | High |
 
 **The two items that dominate are 1a and 2, and they are one piece of work:** a
-signed native process-tap helper. Everything else in this table adds up to
-roughly two weeks.
+signed native process-tap engine. Everything else in this table adds up to
+1-2 weeks.
+
+*Revision note:* the "Windows today" column and rows 8, 11 and 12 describe the
+Python bridge. In `naubd` the equivalents are `audio.rs` (1a, 2, 3),
+`sysmeter.rs` (5), `link.rs` on `serialport-rs` (8, see §3.8), `pins.rs` on
+`dirs` (10 — already resolves to `~/Library/Application Support` on a Mac, so
+this row is free), and `tray.rs` (11 — autostart via `SMAppService` and a
+menu-bar status item replace the `HKCU\Run` key and the Win32 tray). Row 1a's
+"own helper" and row 2's "+2-3 wk" no longer include a separate binary or IPC.
 
 ---
 
@@ -104,8 +175,23 @@ roughly two weeks.
 
 ### 3.0 What actually has to change (grounding)
 
-`naub_bridge.py` never imports a Windows module. The platform surface is four
-files and two constants:
+**`naubd` (the shipping daemon, added at the 2026-10-21 revision).** No module is
+`#[cfg]`-gated, and `Cargo.toml` takes `windows` and `winreg` unconditionally, so
+nothing builds on macOS today:
+
+| file | lines | Windows dependency | verdict |
+|---|---|---|---|
+| `bridge.rs` | 551 | `Bridge::new` returns `windows::core::Result`; otherwise talks to `Audio` / `SysMeter` / `ParametricEq` through their methods | shim — change the error type, put the three behind traits or `cfg` modules |
+| `audio.rs` | 500 | WASAPI throughout (25 `unsafe` blocks) | **rewrite** — this is where the tap engine goes |
+| `sysmeter.rs` | 452 | WASAPI loopback in the capture thread; the FFT and bands are plain Rust | capture swapped for a global tap; FFT kept |
+| `eqapo.rs` | 616 | `winreg` to find Equalizer APO; the filter math and file rendering are portable | retarget (§3.4) |
+| `tray.rs` | 201 | Win32 tray + `HKCU\Run` | rewrite: menu-bar status item, `SMAppService` |
+| `link.rs` | 183 | none, but the port pick needs checking on macOS (§3.8) | verify |
+| `pins.rs`, `config.rs`, `protocol.rs`, `logging.rs` | — | none; `dirs` already maps to macOS paths | as-is |
+
+**The Python bridge** (the original subject of this study, still the development
+tool). `naub_bridge.py` never imports a Windows module. The platform surface is
+four files and two constants:
 
 | file | lines | Windows dependency | verdict |
 |---|---|---|---|
@@ -354,9 +440,12 @@ and a soft limiter).
 **What this costs naub, honestly:**
 - **It cannot be CPython.** A Core Audio IOProc is a real-time callback: no
   allocation, no locks, no Objective-C calls, no logging. Even `np.frombuffer`
-  allocates. This is a signed Swift or C helper, with Python talking to it over a
-  pipe or socket — a new build artefact, a new language in the project, and a new
-  release process.
+  allocates. For the Python bridge this meant a signed Swift or C helper, with
+  Python talking to it over a pipe or socket — a new build artefact, a new
+  language and a new release process. *Revised:* `naubd` is Rust, so the IOProc
+  lives in the daemon and none of that is new. The real-time rules still bind
+  the callback's code: no `Vec` growth, no `Mutex`, no logging — publish peaks
+  through atomics, the way `sysmeter.rs` already hands bands across its thread.
 - **You are asking for a system-audio-recording permission in order to turn a
   volume knob.** There is no way to separate the two: the mute-and-re-render
   trick *is* capture.
@@ -694,6 +783,18 @@ person re-derives the GDI dependency from the same wrong reasoning.
 
 ### 3.8 Serial transport — `find_ports()` is silently broken on macOS
 
+> **Revision note — `naubd` uses `serialport-rs`, not pyserial**, so the analysis
+> below is about the development bridge. `naubd`'s `link::autodetect()` has the
+> same *shape* of risk: it sorts candidates by `info.interface` (the
+> `usbportinfo-interface` feature) and takes the highest as the data port.
+> **Unverified on macOS:** whether `serialport-rs` fills `interface` there at all
+> (if it is `None` for both, `unwrap_or(0)` makes this the same all-ties sort as
+> pyserial's), and whether `available_ports()` returns the `tty.*` node as well
+> as `cu.*` — `naubd` must only ever open `cu.*`, because `tty.*` hangs in
+> `open()` (below). One `naubd --list-ports` / `--probe` run on a Mac settles
+> both; the `" CDC2 "` interface-name discriminator below is the fallback if
+> the number is not there.
+
 **`/dev/cu.*` vs `/dev/tty.*`.** `tty.*` is the *callin* device: `open()` blocks
 *inside the syscall* until DCD is asserted, and a CDC-ACM gadget never asserts a
 real carrier. `/dev/cu.*` ("calling unit") is the *callout* device and opens
@@ -924,7 +1025,8 @@ grants stick and are attributed to *naub*; a real bundle ID for `tccutil`; a rea
 Info.plist for `NSAudioCaptureUsageDescription`; a clean install; and a plausible
 autostart story via `SMAppService`.
 
-**The Python-specific signing gotcha**: Hardened Runtime's library validation
+**The Python-specific signing gotcha** (does not apply to `naubd`, which is one
+statically linked binary and signs as-is): Hardened Runtime's library validation
 breaks PyInstaller/py2app bundles, which load `.so` extension modules not signed
 by your team. You need `com.apple.security.cs.disable-library-validation` and
 often `com.apple.security.cs.allow-unsigned-executable-memory`
@@ -968,7 +1070,10 @@ onto **efficiency cores** — set a QoS class explicitly, not just the App Nap
 opt-out. `caffeinate -i` is the blunt alternative but also prevents idle sleep,
 which users notice.
 
-**The loop will run *faster* on macOS, and that is a behaviour change.**
+**The loop will run *faster* on macOS, and that is a behaviour change** — for the
+Python bridge only. `naubd` does not sleep a fixed 2 ms; it sleeps to the next
+meter deadline, capped at 10 ms (`bridge::MAX_WAIT`), so its rate is its own on
+either platform and this paragraph does not apply to it.
 `naub_bridge.py`'s docstring and STATUS.md both record that `--rate 50` measures
 **31.5 Hz** on Windows, because the 2 ms sleep rounds up to the 15.6 ms timer
 granularity — and that this was left alone deliberately, since fixing it means
@@ -1158,14 +1263,20 @@ an `eq` action. Metering may still be missing here — FineTune's URL scheme is
 write-only — so columns might show correct labels and faders with flat meters.
 That is an odd but defensible state, and better than a wrong meter.
 
-### Phase 3 — the native tap helper (6-10 weeks, $99/yr, signed .app)
+### Phase 3 — the tap engine in `naubd` ($99/yr, signed .app; effort to be re-estimated)
 
-Only if Phase 2's metering gap is unacceptable. Build a small signed Swift or
-Rust helper that: enumerates process objects, gates on `IsRunningOutput`, creates
-N taps in one private aggregate, computes peaks with `vDSP_maxmgv` inside the
-IOProc, and publishes N floats over a pipe at 30 Hz. Start from `catap` or
-`audiotee` rather than from scratch. Add the mute-and-re-render gain path only if
-you are also abandoning FineTune. Ship as a signed, notarised `.app`.
+Only if Phase 2's metering gap is unacceptable. *Originally* a separate Swift or
+Rust helper publishing peaks to the Python bridge over a pipe, priced at 6-10
+weeks. *Revised:* it is a macOS `audio.rs` inside `naubd` that enumerates process
+objects, gates on `IsRunningOutput`, creates N taps in one private aggregate
+(keyed by bundle ID, with `processRestoreEnabled`), computes peaks inside the
+IOProc and publishes N floats through atomics to the bridge loop. `catap` and
+`audiotee` remain the best references for tap behaviour; the `coreaudio` crate's
+process-tap feature is the starting point for bindings. Add the
+mute-and-re-render gain path only if you are also abandoning FineTune. Ship as a
+signed, notarised `.app`. The helper binary and its IPC are gone from the
+estimate; the real-time engine, the watchdog (§3.1) and the device-change
+handling (§3.12) are not, and they were most of it.
 
 ### What I would actually do
 
@@ -1177,12 +1288,15 @@ in §7 get answered anyway. Phase 3 is a different project: it makes naub an aud
 engine rather than a control surface, and that is a product decision, not a
 porting task.
 
-One structural note: whatever happens, **do the adapter split first**. Rename
-`appmeter`/`eqapo`/`sysmeter` to platform-suffixed modules behind a tiny factory,
-the way `host/naub_host/` already anticipated. `naub_bridge.py` needs three
-changes to be fully platform-neutral (the `PIN_PATH`, the `_iface()` branch, and
-the `import appmeter` line becoming a dispatch), and doing that on Windows first
-means the macOS work is additive rather than a fork.
+One structural note: whatever happens, **do the adapter split first**, in
+`naubd` — it is what ships. Move `audio.rs`, `sysmeter.rs`, `eqapo.rs` and
+`tray.rs` behind `#[cfg(windows)]` / `#[cfg(target_os = "macos")]` modules with
+a common interface, give `Bridge::new` a platform-neutral error type, and make
+`windows` / `winreg` target-specific dependencies in `Cargo.toml`. Doing that on
+Windows first means the macOS work is additive rather than a fork. The Python
+bridge's own split (the `PIN_PATH`, the `_iface()` branch, and the
+`import appmeter` line becoming a dispatch) is only needed if the development
+bridge is also wanted on a Mac.
 
 ---
 
@@ -1227,29 +1341,33 @@ decide the shape of the port and cost about a day together.
    set the clock forward 35 days and re-run. **If yes, it probably disqualifies
    tap-based approaches for an always-on hardware controller** — a monthly modal
    dialog naming "Terminal" is not something you ship.
-8. **Does the CIRCUITPY drive mount on the current board at all?**
+8. **Does `naubd`'s port pick work on macOS?** *Experiment:* build it with the
+   platform split stubbed and run `--list-ports` / `--probe`. Check that
+   `interface` is populated for both CDC ports and that only `cu.*` nodes are
+   candidates (§3.8).
+9. **Does the CIRCUITPY drive mount on the current board at all?**
    `BRINGUP_LOG.md` §2 says it did not, and blamed the UF2. *Experiment:* re-flash
    CircuitPython via BOOTSEL and re-test. If it still fails, `deploy.py` on macOS
    must be REPL-only and that should be documented, not discovered.
-9. **Does `shutil.copy` leave `._` files on CIRCUITPY?** Reasoning says no
+10. **Does `shutil.copy` leave `._` files on CIRCUITPY?** Reasoning says no
    (Python's xattr APIs are Linux-only). *Experiment:* one `ls -la
    /Volumes/CIRCUITPY` after a deploy. Cheapest test in this document.
-10. **What does `python -m serial.tools.list_ports -v` actually print for both
+11. **What does `python -m serial.tools.list_ports -v` actually print for both
     CDC ports?** Confirms the §3.8 analysis and tells you whether
     `adafruit-board-toolkit` (last released Dec 2022) still works on current
     macOS. Print `p.interface` for both ports and check for `" CDC2 "`.
-11. **Does the intermittent all-zeros tap bug reproduce?** *Experiment:* a 6-hour
+12. **Does the intermittent all-zeros tap bug reproduce?** *Experiment:* a 6-hour
     capture with Bluetooth headphones sleeping/waking and 44.1/48 kHz content
     alternating; log any window where every tap reads exactly zero while audio is
     audible. Design the watchdog either way.
-12. **Does the multi-pair −12 dB attenuation reproduce?** *Experiment:* play a
+13. **Does the multi-pair −12 dB attenuation reproduce?** *Experiment:* play a
     known 0 dBFS tone; compare tap peak on built-in speakers vs. a multi-channel
     interface. If it does, meters need per-device compensation.
-13. **Does `com.apple.security.cs.disable-library-validation` break capture
+14. **Does `com.apple.security.cs.disable-library-validation` break capture
     grants?** Needed for a PyInstaller/py2app bundle, and it weakens exactly the
     code identity TCC relies on. Untested anywhere I could find, and discovering
     it late invalidates the packaging plan.
-14. **Does a launchd-started bridge get any TCC grant?** See §3.12. Test before
+15. **Does a launchd-started bridge get any TCC grant?** See §3.12. Test before
     promising autostart.
 
 ---

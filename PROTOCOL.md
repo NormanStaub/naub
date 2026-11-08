@@ -245,6 +245,7 @@ ignored). Implemented in `firmware/v2/device/link.py`, and on the host in both
 |---|---|---|
 | `meter <v0> <v1> <v2>` | H→D | Live level for each of the three **columns**, 0–100, pushed continuously (50 Hz by default). Purely a display feed — it never affects audio and is never echoed. |
 | `apps <A,B,C>` | H→D | Every app with a **live audio session**, in the host's preference order — the app switcher's list, and what its counter counts. **Comma** separated, because process names can contain spaces. An empty list is legal and means nothing is playing. |
+| `aicon <b64> <APP>` | H→D | An app's icon, so the switcher can show an app the firmware was not built with. `<b64>` is Base64 of 800 bytes: the 32 px tier's four planes, then the 24 px tier's, in the page layout the shelf blits (`device/drawer.TIERS`). The name is last because it can contain spaces (§1), and is cased as in `apps`. May arrive before or after the `apps` line naming it; until it lands the app draws as a placeholder. A wrong length is refused. The device keeps 32 in RAM, dropping the oldest, and the host counts the same way so it can resend an evicted one. A reload empties the store, and the banner tells the host to send them again. |
 | `ameter <v0> <v1> …` | H→D | One level per entry of the last `apps` list, 0–100. Sent at the meter rate while the switcher is **open**, and at 5 Hz when it is shut — the device needs it either way, because this is what it times each app's playing against (see *What the device offers*, below). |
 | `smeter <v0> … <v20>` | H→D | The system output's **real spectrum**, 21 log-spaced bands from 20 Hz to 20 kHz, 0–100. Sent at the meter rate, but **only while the EQ screen is up** (`mode` says when) — it is the one meter on the device that is a measurement rather than a shape, because the endpoint mix can be captured where a single session cannot. The count must match `device/eqscreen.NMETER`. |
 | `pick <ch> <APP>` | D→H | The user assigned `<APP>` to column `<ch>` from the switcher. The host **pins** that column: it stops reassigning it as the busiest sessions churn, and it remembers the pin across restarts. **One app, one column** — if another column already holds `<APP>`, the two swap. |
@@ -373,9 +374,13 @@ Two V1 verbs are deliberately unimplemented on V2, because the new UI does the
 same job better:
 
 - **`icon` / `iconclear`.** V1 pushed a 32×32 1-bpp icon per channel over the
-  wire. V2 bakes every app's icon into `demos/switcher_data.py` at build time,
-  FRC-encoded per size tier, so the switcher can blit it as a byte-slice copy.
-  Pushing the same data over CDC would be ~3 kB per app and slower to draw.
+  wire. V2 uses `aicon` (§11), which carries the FRC-encoded blocks the switcher
+  blits, so drawing one costs the same as drawing a baked one; the only baked
+  art left is `demos/switcher_data.py`, for when no host has sent anything
+  better. MEASURED (`bench/diag/icon_soak.py`, under 50 Hz meters, mixer screen):
+  120/120 of these 1.1 kB lines stored against a ~200 byte receive ring, even
+  with no gap between them, at 92.3 fps, worst write 46 ms of the 500 ms timeout.
+  naubd still spaces them 100 ms apart, as margin rather than need.
 - **`cycle <ch> <dir>`.** V1's hold-and-turn source reassignment is replaced by
   the app switcher: click a knob, scroll the shelf, click to assign, and the
   device reports the result as `pick`. The host no longer has to own a source

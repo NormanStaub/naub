@@ -1,4 +1,9 @@
-//! N-band parametric EQ, driven into Equalizer APO.
+//! N-band parametric EQ, driven into Equalizer APO on Windows.
+//!
+//! macOS has no such engine and no insertion point for one to use
+//! (`firmware/v2/MACOS_PORT.md` §3.4). There, the band state and the file it is
+//! saved in are the same, but the filters run inside `audio_mac`'s re-render
+//! path (`dsp.rs`): see the `cfg(target_os = "macos")` items below.
 //!
 //! naub writes no DSP. Equalizer APO is already a parametric EQ inside the
 //! Windows audio pipeline; this writes it a config file and gets out of the
@@ -19,7 +24,9 @@
 //!   config write did precisely nothing, and no amount of checking
 //!   `registry -> installed?` would have revealed it. [`ParametricEq::status`]
 //!   asks about the *current default endpoint*, which is the question that
-//!   matters.
+//!   matters, and [`attach`] fixes the answer without the Configurator --
+//!   because Windows re-creates endpoints under new GUIDs (a driver update
+//!   did exactly that), and every re-creation silently drops the APO.
 //! * **Writes are debounced.** A write costs us a fraction of a millisecond,
 //!   but it makes Equalizer APO re-parse the whole config -- the user's filters
 //!   included -- and rebuild its graph. A knob at one detent per 10 ms would do
@@ -29,7 +36,9 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use winreg::enums::HKEY_LOCAL_MACHINE;
+#[cfg(windows)]
+use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_SET_VALUE};
+#[cfg(windows)]
 use winreg::RegKey;
 
 pub const INCLUDE_NAME: &str = "naub-eq.txt";
@@ -56,9 +65,30 @@ const DEFAULTS: [(&str, f64, f64); 3] = [("LSC", 120.0, 0.7), ("PK", 1000.0, 0.9
 /// guaranteed headroom.
 const AUTO_PREAMP: bool = false;
 
+#[cfg(windows)]
 const RENDER: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render";
+#[cfg(windows)]
 const CHILD_APOS: &str = r"SOFTWARE\EqualizerAPO\Child APOs";
+#[cfg(windows)]
 const NAME_VALUE: &str = "{b3f8fa53-0004-438e-9003-51a46e139bfc},6";
+/// Equalizer APO's own COM classes, as they appear in an endpoint's
+/// FxProperties: pre-mix (the one that does the EQ) and post-mix.
+#[cfg(windows)]
+const APO_CLSID: &str = "{EACD2258-FCAC-4FF4-B36D-419E924A6D79}";
+#[cfg(windows)]
+const POST_CLSID: &str = "{EC1CC9CE-FAED-4822-828A-82A81A6F018F}";
+/// PKEY_FX_* (audioenginebaseapo.h): `,5` stream, `,6` mode, `,7` endpoint
+/// effect; `,1`/`,2` are the older pre-mix/post-mix slots.
+#[cfg(windows)]
+const FX: &str = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d}";
+/// PKEY_*FX_ProcessingModes_Supported_For_Streaming, same numbering.
+#[cfg(windows)]
+const MODES: &str = "{d3993a3f-99c2-4402-b5ec-a92a0367664b}";
+#[cfg(windows)]
+const MODE_DEFAULT: &str = "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}";
+/// How `Child APOs` writes down "this slot was empty".
+#[cfg(windows)]
+const ABSENT: &str = "!VALUE";
 
 /// Frequency as Equalizer APO will accept it.
 ///
@@ -175,6 +205,8 @@ impl ParametricEq {
         if eq.available() {
             eq.restore();
         }
+        #[cfg(target_os = "macos")]
+        eq.publish();
         eq
     }
 
@@ -193,41 +225,57 @@ impl ParametricEq {
     /// `(ok, why)`. `ok` means a filter written now would actually be heard:
     /// Equalizer APO installed AND attached to the endpoint currently in use.
     /// The second half is the one that bites -- see the module docs.
+    #[cfg(windows)]
     pub fn status(&self) -> (bool, String) {
         if !self.available() {
             return (false, "Equalizer APO not installed".into());
         }
-        let attached = attached_endpoints();
-        if attached.is_empty() {
-            return (false, "Equalizer APO installed but attached to no device".into());
-        }
-        let mut names: Vec<&String> = attached.iter().map(|(n, _)| n).collect();
-        names.sort();
-        let list = names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
-        let cur = match crate::audio::default_endpoint_name() {
-            Some(c) => c,
-            None => return (true, format!("attached to {list}; current device unknown")),
+        let (guid, cur) = match crate::audio::default_endpoint() {
+            Some(d) => d,
+            None => return (false, "no default output device".into()),
         };
-        for (name, active) in &attached {
-            // The registry holds the DEVICE name ("High Definition Audio
-            // Device") while the endpoint reports "Speakers (High Definition
-            // Audio Device)", so one is embedded in the other at a non-zero
-            // offset. Comparing truncated prefixes fails on exactly that case:
-            // substring, both ways, full strings.
-            let a = name.trim().to_lowercase();
-            let b = cur.trim().to_lowercase();
-            if a.len() >= 6 && b.len() >= 6 && (b.contains(&a) || a.contains(&b)) {
-                return if *active {
-                    (true, format!("active on {cur}"))
-                } else {
-                    (false, format!("{name} is attached but not present"))
-                };
-            }
+        if hosts_apo(&guid) {
+            return (true, format!("active on {cur}"));
         }
+        let others = attached_endpoints();
+        let list = if others.is_empty() {
+            "no device".to_string()
+        } else {
+            others.join(", ")
+        };
         (
             false,
-            format!("not attached to {cur} (only to {list}) -- add it in the Equalizer APO Configurator"),
+            format!(
+                "not attached to {cur} {guid} (only to {list}) -- tray menu: Attach EQ"
+            ),
         )
+    }
+
+    /// `(ok, why)`, on a Mac: a filter is only heard once audio can be tapped
+    /// at all, and a denied grant does not fail, it delivers silence.
+    #[cfg(target_os = "macos")]
+    pub fn status(&self) -> (bool, String) {
+        let cur = crate::audio::default_endpoint_name().unwrap_or_else(|| "no output".into());
+        if crate::audio::capture_ok() {
+            (true, format!("active on {cur} (naub's own filters)"))
+        } else {
+            (
+                false,
+                "no audio has come through a tap yet: play something, and check \
+                 Privacy & Security > Screen & System Audio Recording"
+                    .into(),
+            )
+        }
+    }
+
+    /// Hand the current bands to the running IOProcs.
+    #[cfg(target_os = "macos")]
+    fn publish(&self) {
+        let mut bands = [(0u32, false, 1000.0f32, 0.0f32, 1.0f32); crate::dsp::NBAND];
+        for (o, b) in bands.iter_mut().zip(&self.bands) {
+            *o = (crate::dsp::kind_code(&b.kind), b.on, b.f0 as f32, b.db as f32, b.q as f32);
+        }
+        crate::dsp::EQ.publish(&bands);
     }
 
     pub fn set_gain(&mut self, i: usize, db: f64) {
@@ -301,6 +349,8 @@ impl ParametricEq {
     /// loop, and an EQ that fails to write is a far smaller problem than a
     /// panel that stops updating.
     pub fn flush(&mut self) -> bool {
+        #[cfg(target_os = "macos")]
+        self.publish();
         if !self.available() {
             self.dirty = false;
             return false;
@@ -365,12 +415,20 @@ impl ParametricEq {
         std::fs::write(&path, text)
     }
 
+    /// Nobody else's config to join on a Mac: the file is just where the bands
+    /// are kept between runs.
+    #[cfg(target_os = "macos")]
+    fn ensure_include(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+
     /// Add our one line to the user's config.txt, once.
     ///
     /// Appended verbatim, with no decorative blank line, so `remove` can take
     /// back exactly what was added. An earlier version added a leading blank
     /// line and removed only the two content lines, so every install/uninstall
     /// cycle grew the user's file by one newline.
+    #[cfg(windows)]
     fn ensure_include(&self) -> std::io::Result<()> {
         let path = match self.config_file() {
             Some(p) => p,
@@ -503,6 +561,22 @@ fn squash(s: &str) -> String {
     s.replace(' ', "").to_lowercase()
 }
 
+/// Where the bands are kept on a Mac, next to the column pins.
+#[cfg(target_os = "macos")]
+fn config_path() -> Option<PathBuf> {
+    let dir = crate::pins::path().parent()?.to_path_buf();
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// The Mac's analogue of "is this endpoint hosting the APO": the engine is
+/// always there, and the only thing that can be missing is the grant.
+#[cfg(target_os = "macos")]
+pub fn hosts_apo(_uid: &str) -> bool {
+    crate::audio::capture_ok()
+}
+
+#[cfg(windows)]
 fn config_path() -> Option<PathBuf> {
     let k = RegKey::predef(HKEY_LOCAL_MACHINE)
         .open_subkey(r"SOFTWARE\EqualizerAPO")
@@ -516,28 +590,114 @@ fn config_path() -> Option<PathBuf> {
     }
 }
 
-/// Every endpoint Equalizer APO has actually been attached to, and whether it
-/// is currently present.
-fn attached_endpoints() -> Vec<(String, bool)> {
+/// Is Equalizer APO in this endpoint's effect chain right now?
+///
+/// Read from the endpoint's own `FxProperties`, which is what the audio engine
+/// loads. `Child APOs` is NOT the answer: it is Equalizer APO's bookkeeping,
+/// and it keeps entries for endpoints Windows has since deleted -- three of the
+/// four on the machine where this was found.
+#[cfg(windows)]
+pub fn hosts_apo(guid: &str) -> bool {
+    RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey(format!(r"{RENDER}\{guid}\FxProperties"))
+        .map(|fx| {
+            fx.enum_values()
+                .flatten()
+                .any(|(_, v)| v.to_string().trim().eq_ignore_ascii_case(APO_CLSID))
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+pub fn installed() -> bool {
+    config_path().is_some()
+}
+
+/// Put Equalizer APO into one endpoint's effect chain: what its DeviceSelector
+/// does when a box is ticked, so neither tool is surprised by the other's work
+/// and Equalizer APO's uninstaller still restores the original effects.
+///
+/// The layout is the one DeviceSelector left on the endpoint it attached here
+/// (read back from the registry, not taken from its source):
+///
+/// * `Child APOs\{guid}` records the effect slots it is about to change
+///   (`!VALUE` for an empty one), and names the original stream effect as
+///   `PreMixChild` -- Equalizer APO loads that itself and runs it, so the
+///   driver's own processing is kept, not replaced.
+/// * the endpoint's stream-effect slot (`,5`) gets the pre-mix class and the
+///   endpoint-effect slot (`,7`) the post-mix class; the mode effect (`,6`) is
+///   left alone. If the post-mix slot declares no processing modes, it is
+///   given the default one, as DeviceSelector's install had.
+///
+/// The bookkeeping is written first, so a failure part-way leaves the endpoint
+/// untouched rather than attached with nothing to restore.
+///
+/// Needs Administrator; takes effect when the audio service next starts.
+#[cfg(windows)]
+pub fn attach(guid: &str) -> Result<&'static str, String> {
+    if !installed() {
+        return Err("Equalizer APO is not installed".into());
+    }
+    if hosts_apo(guid) {
+        return Ok("already attached");
+    }
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    // Administrators may set values on an endpoint's FxProperties but not
+    // create the key: an endpoint without one is out of reach from here.
+    let fx = hklm
+        .open_subkey_with_flags(format!(r"{RENDER}\{guid}\FxProperties"), KEY_READ | KEY_SET_VALUE)
+        .map_err(|e| format!("cannot write {guid}'s effect list: {e}"))?;
+    let slot = |n: u32| fx.get_value::<String, _>(format!("{FX},{n}")).ok();
+    // ,1/,2 are the pre-Windows-8.1 LFX/GFX slots. On an endpoint that still
+    // uses them, which slot Equalizer APO belongs in is a judgement call
+    // DeviceSelector makes with options of its own; leave it to it.
+    if slot(5).is_none() && (slot(1).is_some() || slot(2).is_some()) {
+        return Err(format!("{guid} uses the legacy LFX/GFX effect layout -- use DeviceSelector"));
+    }
+    let (child, _) = hklm
+        .create_subkey(format!(r"{CHILD_APOS}\{guid}"))
+        .map_err(|e| format!("cannot record {guid}'s original effects: {e}"))?;
+    let record = || -> std::io::Result<()> {
+        for n in [1, 2, 5, 6, 7] {
+            child.set_value(format!("{FX},{n}"), &slot(n).unwrap_or_else(|| ABSENT.into()))?;
+        }
+        child.set_value("PreMixChild", &slot(5).unwrap_or_default())?;
+        child.set_value("PostMixChild", &slot(7).unwrap_or_default())?;
+        child.set_value("AllowSilentBufferModification", &"false")?;
+        child.set_value("Version", &"2")
+    };
+    record().map_err(|e| format!("cannot record {guid}'s original effects: {e}"))?;
+    let swap = || -> std::io::Result<()> {
+        if fx.get_raw_value(format!("{MODES},7")).is_err() {
+            fx.set_value(format!("{MODES},7"), &vec![MODE_DEFAULT])?;
+        }
+        fx.set_value(format!("{FX},5"), &APO_CLSID)?;
+        fx.set_value(format!("{FX},7"), &POST_CLSID)
+    };
+    swap().map_err(|e| format!("cannot write {guid}'s effect list: {e}"))?;
+    Ok("attached")
+}
+
+/// Names of the endpoints that really do host Equalizer APO, present or not,
+/// for the message that says where it went instead.
+#[cfg(windows)]
+fn attached_endpoints() -> Vec<String> {
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let child = match hklm.open_subkey(CHILD_APOS) {
         Ok(k) => k,
         Err(_) => return Vec::new(),
     };
-    let mut out = Vec::new();
-    for guid in child.enum_keys().flatten() {
-        let name: Option<String> = hklm
-            .open_subkey(format!(r"{RENDER}\{guid}\Properties"))
-            .ok()
-            .and_then(|p| p.get_value(NAME_VALUE).ok());
-        let state: Option<u32> = hklm
-            .open_subkey(format!(r"{RENDER}\{guid}"))
-            .ok()
-            .and_then(|p| p.get_value("DeviceState").ok());
-        if let Some(name) = name {
-            out.push((name, state.map(|s| s & 1 == 1).unwrap_or(false))); // 1 = ACTIVE
-        }
-    }
+    let mut out: Vec<String> = child
+        .enum_keys()
+        .flatten()
+        .filter(|guid| hosts_apo(guid))
+        .filter_map(|guid| {
+            hklm.open_subkey(format!(r"{RENDER}\{guid}\Properties"))
+                .ok()
+                .and_then(|p| p.get_value(NAME_VALUE).ok())
+        })
+        .collect();
+    out.sort();
     out
 }
 

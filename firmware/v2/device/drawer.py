@@ -69,6 +69,10 @@ NAME_MAXW = W - 6             # the whole width, less a margin either side
 # focused icon grows downward into the counter row instead of needing a taller
 # band.  Both sizes are multiples of 8, so a blit is a byte-slice copy.
 TIERS = ((32, 1), (24, 1))
+# One pushed icon on the wire: every tier's planes, end to end.
+ICON_BYTES = sum((s >> 3) * s for s, _ in TIERS) * N_PLANES
+# Pushed icons kept (naubd's appicon::LIVE_MAX evicts in step): about 26 KB.
+LIVE_MAX = 32
 SHELF_P0, SHELF_P1 = 1, 4
 PITCH = 42                    # px between neighbouring slots: exactly 3 visible
 CX = 64                       # the focused slot's centre
@@ -135,9 +139,8 @@ def _bpx(b, size, x, y):
 
 def _placeholder(size, font=None, ch=''):
     """A block for an app we have no icon for: a rounded frame, plus its
-    initial.  The audio session list and the icon catalogue are gathered
-    separately (apps making noise vs. apps with a window), so a mismatch is
-    normal and should look deliberate."""
+    initial.  It shows until the host's `aicon` lands, and for good when the
+    app has no icon or no host is connected, so it should look deliberate."""
     b = bytearray((size >> 3) * size)
     e = size - 1
     for x in range(2, e - 1):
@@ -186,6 +189,8 @@ class Drawer:
         self.fpage = [[memoryview(fb)[p * W:(p + 1) * W]
                        for p in range(gfx.PAGES)] for fb in self.planes]
         self._ph = {}
+        self.live = {}        # NAME -> tiers of plane views, as pushed by the host
+        self.live_order = []  # ... oldest first
         self.idx = 0
         self.lvl = 0.0
         self.pk = 0.0
@@ -222,13 +227,44 @@ class Drawer:
         opens (a dead gesture is worse than an empty shelf), it just has
         nothing to assign."""
         self.apps = tuple(n for n in names if n)
-        self.cat = tuple(self.catalog.index(a.upper())
-                         if a.upper() in self.catalog else -1
-                         for a in self.apps)
+        self._find_art()
         if self.idx >= len(self.apps):
             self.idx = len(self.apps) - 1
         if self.idx < 0:
             self.idx = 0
+
+    def _find_art(self):
+        """Each listed app's tiers: what the host pushed, else what was baked
+        in, else None for a placeholder."""
+        art = []
+        for a in self.apps:
+            u = a.upper()
+            t = self.live.get(u)
+            if t is None and u in self.catalog:
+                t = self.mv[self.catalog.index(u)]
+            art.append(t)
+        self.art = tuple(art)
+
+    def set_icon(self, name, data):
+        """Store an icon the host made (`aicon`).  The wire is not a trusted
+        source and _blit runs off the end of a short block, so a wrong length
+        is refused here rather than found in the frame loop."""
+        if len(data) != ICON_BYTES:
+            raise ValueError('icon is %d bytes, not %d' % (len(data), ICON_BYTES))
+        mv = memoryview(data)
+        tiers = []
+        o = 0
+        for size, _ in TIERS:
+            n = (size >> 3) * size
+            tiers.append([mv[o + k * n:o + (k + 1) * n] for k in range(N_PLANES)])
+            o += n * N_PLANES
+        u = name.upper()
+        if u not in self.live:
+            if len(self.live_order) >= LIVE_MAX:
+                del self.live[self.live_order.pop(0)]
+            self.live_order.append(u)
+        self.live[u] = tiers
+        self._find_art()
 
     def index_of(self, name):
         u = name.upper()
@@ -238,9 +274,9 @@ class Drawer:
         return -1
 
     def _icon(self, i, t, k):
-        c = self.cat[i]
-        if c >= 0:
-            return self.mv[c][t][k]
+        art = self.art[i]
+        if art is not None:
+            return art[t][k]
         size = TIERS[t][0]
         key = (size, self.apps[i][:1])
         b = self._ph.get(key)

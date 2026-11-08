@@ -1,16 +1,25 @@
-// naubd - native Windows daemon for the naub USB mixer (V2, proto=2).
-// Release builds are windowless (tray only); debug builds keep a console for dev.
+// naubd - native daemon for the naub USB mixer (V2, proto=2), Windows and macOS.
+// Windows release builds are windowless (tray only); debug builds keep a console.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(windows)]
+mod admin;
+mod appicon;
+#[cfg(any(test, target_os = "macos"))]
+mod appkey;
+#[cfg_attr(target_os = "macos", path = "audio_mac.rs")]
 mod audio;
 mod bridge;
 mod config;
+#[cfg(any(test, target_os = "macos"))]
+mod dsp;
 mod eqapo;
 mod link;
 mod logging;
 mod pins;
 mod protocol;
 mod sysmeter;
+#[cfg_attr(target_os = "macos", path = "tray_mac.rs")]
 mod tray;
 
 use std::path::{Path, PathBuf};
@@ -31,19 +40,31 @@ fn main() {
             }
         },
         Some("--sessions") => sessions_dump(),
+        Some("--icon") => match args.get(1) {
+            Some(exe) => {
+                if !appicon::dump(exe) {
+                    std::process::exit(1);
+                }
+            }
+            None => println!("usage: naubd --icon <path to exe or .app>"),
+        },
         Some("--eq") => eq_dump(),
+        #[cfg(windows)]
+        Some("--eq-attach") => std::process::exit(eq_attach(&args[1..])),
+        #[cfg(target_os = "macos")]
+        Some("--doctor") => audio::doctor(),
         Some("--eq-remove") => {
             eqapo::ParametricEq::new().remove();
-            println!("naub's Include line and naub-eq.txt removed from the Equalizer APO config");
+            println!("naub's saved EQ removed");
         }
         Some("--spectrum") => spectrum_dump(),
         Some("--install") => {
             tray::set_autostart(true);
-            println!("naubd: start-with-Windows enabled");
+            println!("naubd: {}", if tray::autostart_enabled() { "starts at login" } else { "could not enable start at login (see the log)" });
         }
         Some("--uninstall") => {
             tray::set_autostart(false);
-            println!("naubd: start-with-Windows disabled");
+            println!("naubd: will not start at login");
         }
         // Foreground (no tray) -- live logs, and the per-knob/per-app chatter
         // the daemon leaves out of its file log.
@@ -65,7 +86,8 @@ fn main() {
 fn usage() {
     println!(
         "\nnaubd [--console] [--config PATH] [--list-ports] [--probe]\n\
-         \x20     [--sessions] [--eq] [--eq-remove] [--spectrum]\n\
+         \x20     [--sessions] [--icon EXE] [--eq] [--eq-remove] [--spectrum]\n\
+         \x20     [--eq-attach [GUID]] (Windows)  [--doctor] (macOS)\n\
          \x20     [--install] [--uninstall]\n"
     );
 }
@@ -92,6 +114,9 @@ fn run_console(config_path: PathBuf) {
 
 fn init_logging(cfg: &config::Config) {
     let dir = cfg.path.parent().unwrap_or(Path::new("."));
+    // A Mac app's first run has no such folder yet.
+    #[cfg(target_os = "macos")]
+    let _ = std::fs::create_dir_all(dir);
     logging::init(dir.join("naubd.log"));
 }
 
@@ -112,6 +137,20 @@ fn default_config_path() -> PathBuf {
     candidates
         .into_iter()
         .find(|p| p.exists())
+        .unwrap_or_else(fallback_config_path)
+}
+
+#[cfg(windows)]
+fn fallback_config_path() -> PathBuf {
+    PathBuf::from("config.json")
+}
+
+/// A login item starts with cwd `/`, where the log beside the config could not
+/// be written.
+#[cfg(target_os = "macos")]
+fn fallback_config_path() -> PathBuf {
+    dirs::config_dir()
+        .map(|d| d.join("naub").join("config.json"))
         .unwrap_or_else(|| PathBuf::from("config.json"))
 }
 
@@ -129,6 +168,9 @@ fn sessions_dump() {
             std::process::exit(1);
         }
     };
+    // The Mac engine scans on its own thread and taps take a moment to fill.
+    #[cfg(target_os = "macos")]
+    std::thread::sleep(std::time::Duration::from_secs(2));
     a.refresh();
     let table = a.session_table();
     if table.is_empty() {
@@ -169,6 +211,13 @@ fn eq_dump() {
     let eq = eqapo::ParametricEq::new();
     let (ok, why) = eq.status();
     println!("engine: {} -- {why}", if ok { "ready" } else { "INERT" });
+    // The daemon repeats the cheap half of this once a second (see
+    // Bridge::check_eq), so its cost is worth seeing.
+    if let Some((guid, _)) = audio::default_endpoint() {
+        let t0 = std::time::Instant::now();
+        let _ = eqapo::hosts_apo(&guid);
+        println!("        (per-second check: {} us)", t0.elapsed().as_micros());
+    }
     println!("pins:   {}", pins::path().display());
     println!();
     for (i, b) in eq.bands.iter().enumerate() {
@@ -176,6 +225,71 @@ fn eq_dump() {
     }
     println!();
     print!("{}", eq.render());
+}
+
+#[cfg(windows)]
+/// Attach Equalizer APO to an output (the default one unless a GUID is given)
+/// and restart the audio service so it loads. Exit 0 attached, 1 failed, 2
+/// attached but the service would not restart (a reboot applies it).
+///
+/// Re-launches itself elevated when it is not; the elevated copy is windowless
+/// in a release build, so it reports through the log as well as stdout.
+/// `--no-restart` leaves the service alone (the change then waits for one).
+fn eq_attach(args: &[String]) -> i32 {
+    init_logging(&config::load_or_default(&default_config_path()));
+    let say = |msg: &str| {
+        println!("{msg}");
+        logging::line(&format!("eq-attach: {msg}"));
+    };
+    let restart = !args.iter().any(|a| a == "--no-restart");
+    let guid = match args.iter().find(|a| a.starts_with('{')).cloned() {
+        Some(g) => g.to_ascii_lowercase(),
+        None => match audio::default_endpoint() {
+            Some((g, _)) => g,
+            None => {
+                say("no default output device");
+                return 1;
+            }
+        },
+    };
+    if eqapo::hosts_apo(&guid) {
+        say(&format!("already attached to {guid}"));
+        return 0;
+    }
+    if !admin::is_admin() {
+        let mut sub = vec!["--eq-attach", guid.as_str()];
+        if !restart {
+            sub.push("--no-restart");
+        }
+        return match admin::run_elevated(&sub) {
+            Ok(code) => code as i32,
+            Err(e) => {
+                say(&e);
+                1
+            }
+        };
+    }
+    match eqapo::attach(&guid) {
+        Ok(what) => say(&format!("{what}: {guid}")),
+        Err(e) => {
+            say(&e);
+            return 1;
+        }
+    }
+    if !restart {
+        return 0;
+    }
+    let t0 = std::time::Instant::now();
+    match admin::restart_service("Audiosrv") {
+        Ok(()) => {
+            say(&format!("audio service restarted ({} ms)", t0.elapsed().as_millis()));
+            0
+        }
+        Err(e) => {
+            say(&format!("{e} -- attached, but it applies after a reboot"));
+            2
+        }
+    }
 }
 
 /// Watch the loopback capture, so "the EQ meter is flat" can be answered

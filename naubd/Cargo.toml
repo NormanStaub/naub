@@ -2,16 +2,18 @@
 name = "naubd"
 version = "0.1.0"
 edition = "2021"
-description = "naub host daemon: per-app USB mixer bridge for Windows (native)"
+description = "naub host daemon: per-app USB mixer bridge for Windows and macOS (native)"
 
 [dependencies]
 serialport = { version = "4", features = ["usbportinfo-interface"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"
+
+[target.'cfg(windows)'.dependencies]
 winreg = "0.52"
 
-[dependencies.windows]
+[target.'cfg(windows)'.dependencies.windows]
 version = "0.58"
 features = [
     "Win32_Foundation",
@@ -21,6 +23,7 @@ features = [
     "Win32_System_Threading",
     "Win32_System_ProcessStatus",
     "Win32_System_Registry",
+    "Win32_System_Services",
     "Win32_System_LibraryLoader",
     "Win32_Media_Audio",
     "Win32_Media_Audio_Endpoints",
@@ -30,6 +33,16 @@ features = [
     "Win32_Graphics_Gdi",
     "Win32_Devices_FunctionDiscovery",
 ]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+objc2-core-foundation = "0.3"
+objc2-core-audio = "0.3"
+objc2-core-audio-types = "0.3"
+objc2-service-management = "0.3"
 
 [profile.release]
 opt-level = "z"

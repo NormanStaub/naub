@@ -12,6 +12,10 @@ byte-slice copy, which is what makes the scroll animation affordable on-device.
 The dither pattern is baked at x=0, so an icon drawn at a column that is not a
 multiple of 4 gets its Bayer phase shifted.  That is invisible (it is noise
 either way) and it buys per-pixel-free positioning.
+
+This is only the starting set now, for when no host has sent anything better:
+naubd makes an icon for whatever is playing and pushes it (naubd/src/appicon.rs),
+and gen_frc_golden.py holds its encoder to this one.
 """
 import _paths
 import os, sys, tempfile

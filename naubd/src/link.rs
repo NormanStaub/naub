@@ -131,10 +131,11 @@ pub fn list_ports() -> Vec<(String, String)> {
         .map(|p| {
             let desc = match &p.port_type {
                 SerialPortType::UsbPort(i) => format!(
-                    "USB {:04x}:{:04x} {}",
+                    "USB {:04x}:{:04x} {} iface={:?}",
                     i.vid,
                     i.pid,
-                    i.product.clone().unwrap_or_default()
+                    i.product.clone().unwrap_or_default(),
+                    i.interface
                 ),
                 SerialPortType::BluetoothPort => "Bluetooth".into(),
                 SerialPortType::PciPort => "PCI".into(),
@@ -164,7 +165,7 @@ pub fn list_ports() -> Vec<(String, String)> {
 /// Before `boot.py` takes effect there is only ONE port, which is how "not
 /// power cycled yet" is detected -- there is no data port to return.
 pub fn autodetect() -> Option<String> {
-    let mut candidates: Vec<(u8, String)> = serialport::available_ports()
+    let candidates: Vec<(u8, String)> = serialport::available_ports()
         .ok()?
         .into_iter()
         .filter_map(|p| match &p.port_type {
@@ -174,10 +175,67 @@ pub fn autodetect() -> Option<String> {
             _ => None,
         })
         .collect();
-    if candidates.len() < 2 {
-        return None; // console only: boot.py has not taken effect yet
-    }
-    candidates.sort_by_key(|(iface, _)| *iface);
-    candidates.pop().map(|(_, name)| name)
+    pick_data_port(candidates)
 }
 
+/// A Mac lists every serial port twice. `/dev/tty.*` blocks inside `open()`
+/// until carrier detect, which a USB gadget never asserts, so opening it is a
+/// hang rather than an error; only ever use `/dev/cu.*`.
+///
+/// Ties on interface number (the number being unavailable) fall to the name:
+/// reported dual-CDC pairs are `usbmodem1101` / `usbmodem1103`, console first.
+/// That is a fallback, since Apple does not document the naming.
+fn pick_data_port(candidates: Vec<(u8, String)>) -> Option<String> {
+    let mut ports: Vec<(u8, String)> =
+        candidates.into_iter().filter(|(_, name)| !name.starts_with("/dev/tty.")).collect();
+    if ports.len() < 2 {
+        return None; // console only: boot.py has not taken effect yet
+    }
+    ports.sort();
+    ports.pop().map(|(_, name)| name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_highest_interface_is_the_data_port() {
+        let got = pick_data_port(vec![(2, "COM10".into()), (0, "COM9".into())]);
+        assert_eq!(got.as_deref(), Some("COM10"));
+    }
+
+    #[test]
+    fn one_port_means_boot_py_has_not_taken_effect() {
+        assert_eq!(pick_data_port(vec![(0, "COM9".into())]), None);
+    }
+
+    #[test]
+    fn a_mac_never_opens_the_tty_node() {
+        let got = pick_data_port(vec![
+            (0, "/dev/cu.usbmodem1101".into()),
+            (0, "/dev/tty.usbmodem1101".into()),
+            (2, "/dev/cu.usbmodem1103".into()),
+            (2, "/dev/tty.usbmodem1103".into()),
+        ]);
+        assert_eq!(got.as_deref(), Some("/dev/cu.usbmodem1103"));
+    }
+
+    #[test]
+    fn the_tty_twin_does_not_make_one_port_look_like_two() {
+        let got = pick_data_port(vec![
+            (0, "/dev/cu.usbmodem1101".into()),
+            (0, "/dev/tty.usbmodem1101".into()),
+        ]);
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn without_interface_numbers_the_name_decides() {
+        let got = pick_data_port(vec![
+            (0, "/dev/cu.usbmodem1103".into()),
+            (0, "/dev/cu.usbmodem1101".into()),
+        ]);
+        assert_eq!(got.as_deref(), Some("/dev/cu.usbmodem1103"));
+    }
+}

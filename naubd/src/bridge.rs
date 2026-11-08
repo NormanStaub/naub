@@ -18,6 +18,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::appicon;
 use crate::audio::{self, Audio};
 use crate::eqapo::{self, ParametricEq};
 use crate::link::{autodetect, SerialLink};
@@ -54,6 +55,8 @@ pub struct Bridge {
     keys: Vec<String>,
     /// Every app with a live session -- the switcher's candidate list.
     apps: Vec<String>,
+    /// Their icons, made and sent as they turn up.
+    icons: appicon::Pusher,
     /// Columns the user assigned by hand, which auto-assignment must not touch.
     pinned: Vec<Option<String>>,
     /// Is the switcher up? It meters faster while it is.
@@ -62,6 +65,14 @@ pub struct Bridge {
     vol: Vec<Option<i32>>,
     muted: Vec<Option<bool>>,
     eq: ParametricEq,
+    /// What the panel was last told about the EQ engine, so a change -- the
+    /// default output moving, or Equalizer APO being attached or lost -- is
+    /// pushed when it happens rather than at the next reconnect.
+    eq_status: Option<(bool, String)>,
+    /// The cheap half of that: which endpoint is default, and whether it hosts
+    /// the APO. The full status (an enumerator, a registry walk for the "only
+    /// attached to ..." message) is rebuilt only when this moves.
+    eq_key: Option<(Option<String>, bool)>,
     sys: SysMeter,
     sys_ok: bool,
     mode: i32,
@@ -72,7 +83,7 @@ fn log(msg: &str) {
 }
 
 impl Bridge {
-    pub fn new(port: String, rate: f64, verbose: bool) -> windows::core::Result<Self> {
+    pub fn new(port: String, rate: f64, verbose: bool) -> Result<Self, String> {
         let pinned = pins::load();
         if pinned.iter().any(|p| p.is_some()) {
             log(&format!(
@@ -85,18 +96,21 @@ impl Bridge {
             ));
         }
         Ok(Self {
-            audio: Audio::new()?,
+            audio: Audio::new().map_err(|e| e.to_string())?,
             link: None,
             port,
             rate: rate.clamp(1.0, 200.0),
             verbose,
             keys: Vec::new(),
             apps: Vec::new(),
+            icons: appicon::Pusher::new(),
             pinned,
             wheel_open: false,
             vol: vec![None; NCOL + 1],
             muted: vec![None; NCOL + 1],
             eq: ParametricEq::new(),
+            eq_status: None,
+            eq_key: None,
             // The EQ screen's meter is a REAL analysis of the system output.
             // Started on demand -- see want_spectrum().
             sys: SysMeter::new(SBANDS),
@@ -232,6 +246,22 @@ impl Bridge {
         }
     }
 
+    /// Start fetching the next icon the device lacks, and send one that is
+    /// ready. Called every pass: the Pusher does its own pacing, and apps arrive
+    /// ahead of their art, drawing as a placeholder until it lands.
+    fn pump_icons(&mut self) {
+        if let Some(line) = self.icons.poll(Instant::now()) {
+            self.send(&line);
+        }
+        let Some(key) = self.icons.next_wanted(&self.apps).cloned() else {
+            return;
+        };
+        match self.audio.exe_of(&key) {
+            Some(exe) => self.icons.fetch(&key, exe),
+            None => self.icons.mark_none(&key),
+        }
+    }
+
     fn push_names(&mut self, force: bool) {
         let keys = self.columns();
         if keys == self.keys && !force {
@@ -287,16 +317,9 @@ impl Bridge {
     /// Everything the EQ screen needs: what the engine can do, whether it would
     /// be heard at all, and where every band currently sits.
     fn push_eq(&mut self) {
-        let (ok, why) = self.eq.status();
-        let caps = protocol::eqcaps(
-            self.eq.bands.len(),
-            eqapo::FMIN,
-            eqapo::FMAX,
-            eqapo::MAXDB,
-            48000,
-            ok,
-        );
-        self.send(&caps);
+        self.eq_status = None;
+        self.eq_key = None;
+        self.check_eq();
         let lines: Vec<String> = self
             .eq
             .bands
@@ -305,7 +328,38 @@ impl Bridge {
             .map(|(i, b)| protocol::eqband(i, &b.wire()))
             .collect();
         self.send_all(lines);
-        log(&format!("eq: {} -- {why}", if ok { "ready" } else { "INERT" }));
+    }
+
+    /// Re-ask whether the EQ would be heard, and tell the panel if the answer
+    /// changed. Only `eqcaps` goes out: the bands are ours and have not moved.
+    ///
+    /// Polled with the session rescan rather than hooked to endpoint-change
+    /// notifications, because one of the two things it watches -- someone
+    /// running Equalizer APO's DeviceSelector -- raises no audio event at all.
+    fn check_eq(&mut self) {
+        let guid = self.audio.default_guid().map(str::to_string);
+        let hosts = guid.as_deref().map(eqapo::hosts_apo).unwrap_or(false);
+        let key = Some((guid, hosts));
+        if self.eq_key == key {
+            return;
+        }
+        self.eq_key = key;
+        let status = self.eq.status();
+        if self.eq_status.as_ref() == Some(&status) {
+            return;
+        }
+        let (ok, why) = &status;
+        let caps = protocol::eqcaps(
+            self.eq.bands.len(),
+            eqapo::FMIN,
+            eqapo::FMAX,
+            eqapo::MAXDB,
+            48000,
+            *ok,
+        );
+        self.send(&caps);
+        log(&format!("eq: {} -- {why}", if *ok { "ready" } else { "INERT" }));
+        self.eq_status = Some(status);
     }
 
     /// Push everything the device needs after a (re)connect. It boots with
@@ -315,6 +369,7 @@ impl Bridge {
         self.apps.clear();
         self.vol = vec![None; NCOL + 1];
         self.muted = vec![None; NCOL + 1];
+        self.icons.reset();
         let hello = protocol::hello();
         self.send(&hello);
         self.push_apps(true);
@@ -352,6 +407,8 @@ impl Bridge {
         match ev {
             DeviceEvent::Banner(line) => {
                 log(&format!("  device: {line}"));
+                // Said after a reload too, and a reload empties its icon store.
+                self.icons.reset();
                 self.push_apps(true);
                 self.push_names(true);
                 self.push_state();
@@ -484,6 +541,8 @@ impl Bridge {
                 }
             }
 
+            self.pump_icons();
+
             let now = Instant::now();
             if now >= next_meter {
                 next_meter = now + period;
@@ -534,6 +593,7 @@ impl Bridge {
                         self.sys.restart_if_dead();
                     }
                 }
+                self.check_eq();
             }
 
             if self.link.is_none() {

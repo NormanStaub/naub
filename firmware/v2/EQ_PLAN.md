@@ -284,6 +284,13 @@ bottom four octaves would live in the first two detents.
   is not enough; the Configurator attaches it per device. Detect it (the
   registry key already gives this) and have the EQ mode say so rather than
   silently doing nothing.
+
+  *2026-10-24:* it bit again, and not through user error: Windows re-created
+  the Speakers endpoint under a new GUID and the APO stayed on the dead one.
+  naubd now checks the default endpoint's own `FxProperties` once a second
+  (39 µs) and offers **Attach EQ** from the tray (`naubd --eq-attach`), which
+  writes DeviceSelector's layout itself and restarts the audio service. Still
+  one click per new endpoint; a zero-touch watcher is the proposed next step.
 - **`config.txt` belongs to the user, down to the byte.** Append one guarded
   line, never rewrite, and be able to take it back out exactly.
 

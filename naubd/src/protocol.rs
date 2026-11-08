@@ -2,8 +2,8 @@
 //! See ../../PROTOCOL.md §§3, 4, 10, 11. Host->device encoders + device->host parser.
 //!
 //! V1's `cycle` / `icon` / `iconclear` are gone: the V2 panel picks its own
-//! source from the switcher (`pick`) and draws icons it already has baked in,
-//! so the host never pushes a bitmap. Unknown verbs still parse to `None` --
+//! source from the switcher (`pick`), and an app's art arrives as `aicon`, in
+//! the form the shelf blits. Unknown verbs still parse to `None` --
 //! §1's forward-compat rule is what lets a device and host of different
 //! vintages share a link.
 
@@ -120,6 +120,27 @@ pub fn apps(keys: &[String]) -> String {
     format!("apps {}", up.join(","))
 }
 
+/// One app's icon, as the shelf blits it. The name goes LAST because it can
+/// contain spaces (§1), and is cased as `apps` cases it so the two match up.
+pub fn aicon(key: &str, blob: &[u8]) -> String {
+    format!("aicon {} {}", base64(blob), key.to_uppercase())
+}
+
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::with_capacity((data.len() + 2) / 3 * 4);
+    for c in data.chunks(3) {
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
+        s.push(T[(n >> 18) as usize & 63] as char);
+        s.push(T[(n >> 12) as usize & 63] as char);
+        s.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        s.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    s
+}
+
 /// What the host's EQ engine can do, and whether it would actually be heard.
 /// `ok == false` is normal, not an error: Equalizer APO attaches per endpoint.
 pub fn eqcaps(nband: usize, fmin: f64, fmax: f64, maxdb: f64, rate: u32, ok: bool) -> String {
@@ -203,6 +224,8 @@ mod tests {
         assert_eq!(smeter(&[]), "smeter");
         assert_eq!(apps(&["spotify".into(), "chrome".into()]), "apps SPOTIFY,CHROME");
         assert_eq!(apps(&[]), "apps ");
+        assert_eq!(aicon("nzxt cam", b"foob"), "aicon Zm9vYg== NZXT CAM");
+        assert_eq!(aicon("a", b"foo"), "aicon Zm9v A");
     }
 
     #[test]
