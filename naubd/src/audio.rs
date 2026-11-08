@@ -174,7 +174,7 @@ impl Audio {
     /// endpoint being torn down and recreated (headphones plugged in, a
     /// Bluetooth speaker connecting, the Equalizer APO configurator doing its
     /// work) makes every call on the old device fail for a moment. That is a
-    /// normal event, so the previous session map is kept and retried next time.
+    /// normal event: the map stays empty and it is retried next time.
     pub fn refresh(&mut self) -> bool {
         if self.built.elapsed() > ENDPOINT_REBUILD {
             self.rebuild_endpoints();
@@ -184,6 +184,14 @@ impl Audio {
             self.default_guid = endpoint_guid(&dev);
         }
 
+        // BEFORE anything is enumerated, not swapped out afterwards. Calling
+        // GetSessionEnumerator while the last pass's session objects are alive
+        // leaks inside the audio stack, in proportion to the sessions held: 0.9
+        // KB per pass with one, 10-17 KB with the 13-33 found on the machine it
+        // was caught on, and 2.4 GB in 39 hours. MEASURED: flat at 0 bytes over
+        // 12000 passes this way round. Taking the enumerators first and dropping
+        // the old map before walking them still leaks.
+        self.by_key.clear();
         let mut by_key: HashMap<String, Vec<Session>> = HashMap::new();
         let mut any = false;
         // Cloned because the loop calls back into `self` to name processes.
